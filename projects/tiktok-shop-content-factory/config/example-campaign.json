@@ -1,0 +1,36 @@
+{
+  "product": {
+    "id": "product-001",
+    "name": "GlowPro LED Face Mask",
+    "description": "Professional-grade LED therapy mask for at-home skincare. Features 7 light colors for different skin concerns.",
+    "price": 89.99,
+    "category": "beauty",
+    "tiktokShopUrl": "https://shop.tiktok.com/view/product/glowpro-led-mask",
+    "amazonUrl": "https://amazon.com/dp/B0EXAMPLE",
+    "affiliateCommission": 15,
+    "keyBenefits": [
+      "7 LED light colors for different skin concerns",
+      "FDA-cleared technology",
+      "10-minute daily treatment",
+      "Reduces fine lines and acne",
+      "Professional results at home"
+    ],
+    "targetDemographic": "Women 25-45 interested in skincare",
+    "images": [
+      "/images/product-front.jpg",
+      "/images/product-in-use.jpg",
+      "/images/before-after.jpg"
+    ]
+  },
+  "niche": "beauty",
+  "competitors": [
+    "CurrentBody",
+    "Dr. Dennis Gross",
+    "Omnilux",
+    "Solawave"
+  ],
+  "dailyPostTarget": 3,
+  "platforms": ["tiktok", "instagram", "youtube-shorts"],
+  "contentStyle": "mixed",
+  "toneOfVoice": "enthusiastic but authentic, like a friend sharing a discovery"
+}
