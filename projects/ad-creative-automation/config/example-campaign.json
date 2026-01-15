@@ -1,0 +1,18 @@
+{
+  "brand": {
+    "name": "Example Brand",
+    "website": "https://example.com",
+    "description": "A SaaS platform that helps small businesses manage their inventory",
+    "tone": "Professional yet approachable, helpful, clear",
+    "colors": ["#2563EB", "#1E40AF", "#DBEAFE"],
+    "targetAudience": "Small business owners and operations managers"
+  },
+  "product": "Inventory Management Software",
+  "goal": "conversion",
+  "competitors": [
+    "competitor1.com",
+    "competitor2.com",
+    "competitor3.com"
+  ],
+  "platforms": ["meta", "google"]
+}
