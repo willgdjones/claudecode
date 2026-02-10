@@ -1,0 +1,14 @@
+/home/user/claudecode/projects/polymarket-agent/target/debug/deps/const_hex-96cb4ad5a2822320.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/generic.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/impl_core.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/traits.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/display.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/error.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/buffer.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/output.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/x86.rs
+
+/home/user/claudecode/projects/polymarket-agent/target/debug/deps/libconst_hex-96cb4ad5a2822320.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/generic.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/impl_core.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/traits.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/display.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/error.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/buffer.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/output.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/x86.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/generic.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/impl_core.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/traits.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/display.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/error.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/buffer.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/output.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const-hex-1.17.0/src/arch/x86.rs:

@@ -1,0 +1,10 @@
+/home/user/claudecode/projects/polymarket-agent/target/debug/deps/parity_scale_codec_derive-aac930345d333730.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/decode.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/encode.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/max_encoded_len.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/trait_bounds.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/utils.rs
+
+/home/user/claudecode/projects/polymarket-agent/target/debug/deps/libparity_scale_codec_derive-aac930345d333730.so: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/decode.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/encode.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/max_encoded_len.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/trait_bounds.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/utils.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/decode.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/encode.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/max_encoded_len.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/trait_bounds.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parity-scale-codec-derive-3.7.5/src/utils.rs:

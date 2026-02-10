@@ -1,0 +1,35 @@
+[package]
+name = "polymarket-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Autonomous trading agent for Polymarket prediction markets"
+
+[[bin]]
+name = "polymarket-agent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+thiserror = "2"
+dotenvy = "0.15"
+clap = { version = "4", features = ["derive"] }
+ethers = { version = "2", features = ["rustls"] }
+hex = "0.4"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
