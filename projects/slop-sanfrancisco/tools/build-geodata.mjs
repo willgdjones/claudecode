@@ -53,7 +53,7 @@ const nodeH = gradeRoads(T, segments);
 lap('roads graded');
 
 // --- 2. Ground classes: plan majority + parks + beaches ---------------------------------------------------------------
-const ground = classGrid(plan);
+const ground = classGrid(plan, T);
 const C_PARK = 4, C_SAND = 5;
 const parks = [];
 {

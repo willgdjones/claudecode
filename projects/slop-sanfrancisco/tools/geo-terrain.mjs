@@ -69,8 +69,10 @@ function classifyWater(hgt) {
       R.d[k] = flat ? 1 : 0;
     }
   }
-  for (let i = 0; i < w; i++) { R.d[i] = 2; R.d[(h - 1) * w + i] = 2; }
-  for (let j = 0; j < h; j++) { R.d[j * w] = 2; R.d[j * w + w - 1] = 2; }
+  // the grid's border: NoData (the sea) where the survey has none, land where it does (or the 1/3" DEM filled it)
+  for (const k of [...Array(w).keys()].flatMap((i) => [i, (h - 1) * w + i]).concat([...Array(h).keys()].flatMap((j) => [j * w, j * w + w - 1]))) {
+    R.d[k] = hgt[k] === NODATA ? 2 : 0;
+  }
   const { lab, comps } = labelComponents(R);
   const water = new Uint8Array(w * h); // 0 land, 1 sea, 2 lake
   const lakes = [];

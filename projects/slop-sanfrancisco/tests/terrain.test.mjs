@@ -40,21 +40,18 @@ test('heightAt is continuous across the city (no steps between neighbouring samp
   assert.ok(worst.step < 5, `a ${worst.step.toFixed(2)} m step at (${worst.x}, ${worst.z})`);
 });
 
-test('heightAt meets the Bay ring without a cliff at the edge of the city grid', {
-  skip: 'data/terrain.bin.gz marks land beyond the city DEM (the Marin Headlands west & north of the grid, Daly City/'
-    + 'Brisbane south of the county line) as water at -8 m, while the Bay ring just outside has the real land (up to '
-    + '~250 m): e.g. heightAt(-1990, 9190) = -8 but heightAt(-1990, 9201) = 253; heightAt(-9998, -4635) = -8 vs 96.7 at x = -10001'
-}, () => {
+test('the ground meets the Bay ring without a cliff at the edge of the city grid', () => {
+  // the visible surface: under water, the city grid keeps the seabed (-8 m) and the Bay ring 0 m
   let worst = { step: 0 };
   for (let z = CITY_BOUNDS.minZ; z < CITY_BOUNDS.maxZ; z += 20) {
     for (const x of [CITY_BOUNDS.minX, CITY_BOUNDS.maxX]) {
-      const step = Math.abs(heightAt(x - 2, z) - heightAt(x + 2, z));
+      const step = Math.abs(surfaceAt(x - 2, z) - surfaceAt(x + 2, z));
       if (step > worst.step) worst = { step, x, z };
     }
   }
   for (let x = CITY_BOUNDS.minX; x < CITY_BOUNDS.maxX; x += 20) {
     for (const z of [CITY_BOUNDS.minZ, CITY_BOUNDS.maxZ]) {
-      const step = Math.abs(heightAt(x, z - 2) - heightAt(x, z + 2));
+      const step = Math.abs(surfaceAt(x, z - 2) - surfaceAt(x, z + 2));
       if (step > worst.step) worst = { step, x, z };
     }
   }

@@ -187,7 +187,7 @@ export function buildPlan(terrain) {
 }
 
 /** Majority class of each terrain cell (4 m) from the 1 m plan, for ground shading */
-export function classGrid(plan) {
+export function classGrid(plan, terrain = null) {
   const { R, C } = plan;
   const T = TERRAIN;
   const out = new Uint8Array(T.w * T.h);
@@ -208,7 +208,9 @@ export function classGrid(plan) {
       let best = 0;
       for (let c = 1; c < 4; c++) if (cnt[c] > cnt[best] || (c === C_ROAD && cnt[c] >= 6)) best = c;
       if (cnt[C_ROAD] >= 6) best = C_ROAD;
-      out[tj * T.w + ti] = cnt[0] + cnt[1] + cnt[2] + cnt[3] ? best : C_WATER;
+      // beyond the plan (the Marin Headlands, Daly City...): the terrain's own water mask
+      const outside = terrain && terrain.water[tj * T.w + ti] === 0 ? C_OPEN : C_WATER;
+      out[tj * T.w + ti] = cnt[0] + cnt[1] + cnt[2] + cnt[3] ? best : outside;
     }
   }
   return out;
