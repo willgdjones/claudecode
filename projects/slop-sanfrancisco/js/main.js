@@ -110,6 +110,7 @@ async function initApp() {
     const p = controllerManager.getActiveEntity().position;
     ground.prime(p);
     cityBlocks.update(p.x, p.z, true);
+    world.update(p.x, p.z, true);
   }
 
   const cameraSystem = new CameraSystem(renderer.domElement, controllerManager);
@@ -153,6 +154,10 @@ async function initApp() {
         object.instanceMatrix = new THREE.StorageInstancedBufferAttribute(object.instanceMatrix.array, 16);
       }
     });
+  } else if (renderer.backend.capabilities) {
+    // ...and on WebGL2 a uniform array sized to the instance count is compiled into the shader: every tile of street
+    // furniture (a different count each) would compile its own program. Instanced attributes keep one per material.
+    renderer.backend.capabilities.maxUniformBlockSize = 0;
   }
 
   // 5. TSL RenderPipeline with Half-Res Screen Space Reflections (SSRNode), Bloom & Filmic Toning
@@ -426,6 +431,7 @@ async function initApp() {
     // the ground & buildings around the destination at full detail before the first frame there
     ground.prime({ x, y: 0, z });
     cityBlocks.update(x, z, true);
+    world.update(x, z, true);
     const destination = controllerManager.teleportActiveTo(x, z, heading);
     touchControls.reset();
     gamepadControls.reset();
@@ -636,9 +642,10 @@ async function initApp() {
   markInit('compile');
 
   // ?nocrowd hides the GPU-skinned people (they come out as screen-filling garbage on software WebGL renderers)
-  if (new URLSearchParams(location.search).has('nocrowd')) {
-    for (const o of scene.children) if (/^People/.test(o.name)) o.visible = false;
-  }
+  // ?hide=Name,Name hides the top-level scene objects whose names start with those (to find what is costly to draw)
+  const debugParams = new URLSearchParams(location.search);
+  const hidden = [...(debugParams.has('nocrowd') ? ['People'] : []), ...(debugParams.get('hide') || '').split(',').filter(Boolean)];
+  for (const o of scene.children) if (hidden.some((h) => o.name.startsWith(h))) o.visible = false;
 
   // Handles for the console & automated tests (tests/ and tools/ screenshot scripts)
   window.sf = { scene, renderer, cameraSystem, controllerManager, lightingSystem, ground, cityBlocks, world, teleportTo, selectMode, selectCamera, selectTime };
@@ -679,6 +686,7 @@ async function initApp() {
     }
     ground.update(cameraSystem.currentPos);
     cityBlocks.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z);
+    world.update(cameraSystem.currentPos.x, cameraSystem.currentPos.z);
     if (cityBlocks.updateLights) cityBlocks.updateLights(cameraSystem.camera);
     if (streetDetails.update) streetDetails.update(cameraSystem.camera);
     lightingSystem.update(cameraSystem.currentPos);

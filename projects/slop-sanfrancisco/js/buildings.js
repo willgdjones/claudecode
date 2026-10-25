@@ -47,6 +47,7 @@ const LAYOUT = {
   industrial: [3.6, 4.6], civic: [2.9, 4.6], shed: [3.0, 3.0]
 };
 const STYLE_NAMES = Object.keys(STYLE);
+const BRICK_SHARE = { midrise: 0.3, industrial: 0.45, civic: 0.25, tower: 0.15 };
 
 function facadeOf(b) {
   const name = STYLE_NAMES[b.style] || 'midrise';
@@ -55,7 +56,10 @@ function facadeOf(b) {
   const paint = pal[Math.floor(r * pal.length) % pal.length];
   const [ww, fh] = LAYOUT[name];
   const glass = name === 'tower' && hash(b.seed * 1.7 + 3.1) < 0.55 ? (hash(b.seed + 9.2) < 0.5 ? 1 : 2) : 0;
-  return { name, paint, ww: ww * (0.9 + 0.2 * hash(b.seed + 1.3)), fh, glass };
+  // Wall finish: San Francisco's houses are painted wood & stucco; some of the older midrise, warehouse & civic
+  // buildings are brick. A negative storey height in the paint attribute marks brick (tsl-materials.js perVertex).
+  const brick = hash(b.seed * 2.3 + 0.7) < (BRICK_SHARE[name] || 0);
+  return { name, paint, ww: ww * (0.9 + 0.2 * hash(b.seed + 1.3)), fh: brick ? -fh : fh, glass };
 }
 
 // --- Footprint helpers -----------------------------------------------------------------------------------------------
@@ -146,6 +150,52 @@ function wallKind(b, f, x0, z0, x1, z1) {
   return WALL_KINDS.rear;
 }
 
+// The angled bay window of a Victorian / Edwardian street front: three faces (two splayed at 45°, one parallel to the
+// wall 0.8 m out) from the top of the ground floor to just under the cornice, with a cap above and a soffit below.
+// Off-centre (the front door beside it) on most lots; each face is its own little wall with one window per storey.
+const BAY_DEPTH = 0.8;
+function addBayWindow(o, b, f, x0, z0, x1, z1, L, nx, nz, H, seedTone, wallIndex) {
+  const fh = Math.abs(f.fh);
+  if (L < 4.2 || H < fh * 1.9 || hash(b.seed * 3.1 + wallIndex) > 0.8) return;
+  const w = Math.min(3.6, L * 0.5);
+  const side = hash(b.seed + wallIndex * 1.7);
+  const sc = L < 6.5 ? L / 2 : L * (side < 0.5 ? 0.34 : 0.66);
+  const dx = (x1 - x0) / L, dz = (z1 - z0) / L;
+  const at = (s, out) => [x0 + dx * s + nx * out, z0 + dz * s + nz * out];
+  // plan outline, along the wall: back corner, front corner, front corner, back corner
+  const P = [at(sc - w / 2, 0), at(sc - w / 2 + BAY_DEPTH, BAY_DEPTH), at(sc + w / 2 - BAY_DEPTH, BAY_DEPTH), at(sc + w / 2, 0)];
+  const y0 = b.base + fh, y1 = b.top - Math.min(0.7, fh * 0.2);
+  for (let k = 0; k < 3; k++) {
+    const [ax, az] = P[k], [cx, cz] = P[k + 1];
+    const fl = Math.hypot(cx - ax, cz - az);
+    const fnx = (cz - az) / fl, fnz = -(cx - ax) / fl;
+    const v = o.pos.length / 3;
+    o.pos.push(ax, y0, az, cx, y0, cz, cx, y1, cz, ax, y1, az);
+    for (let q = 0; q < 4; q++) o.nrm.push(fnx, 0, fnz);
+    const v0 = y0 - b.base, v1 = y1 - b.base;
+    o.wall.push(0, v0, fl, H, fl, v0, fl, H, fl, v1, fl, H, 0, v1, fl, H);
+    for (let q = 0; q < 4; q++) o.info.push(WALL_KINDS.entry, seedTone, wallIndex * 3 + 7 + k, fl);
+    for (let q = 0; q < 4; q++) o.paint.push(f.paint[0], f.paint[1], f.paint[2], f.fh);
+    o.idx.push(v, v + 2, v + 1, v, v + 3, v + 2);
+  }
+  // cap (facing up) & soffit (facing down): the quad P0..P3 at y1 and y0, in the trim's blank stone
+  for (const [y, ny] of [[y1, 1], [y0, -1]]) {
+    const v = o.pos.length / 3;
+    for (const [px, pz] of P) {
+      o.pos.push(px, y, pz);
+      o.nrm.push(0, ny, 0);
+      o.wall.push(0, H, 1, H);
+      o.info.push(WALL_KINDS.blankStone, seedTone, 0, f.ww);
+      o.paint.push(f.paint[0], f.paint[1], f.paint[2], f.fh);
+    }
+    // P runs along the wall with the bay on its outward side; wind so the cap faces up (as the roof triangles)
+    const cross = (P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1]);
+    const up = (cross < 0) === (ny > 0);
+    if (up) o.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+    else o.idx.push(v, v + 2, v + 1, v, v + 3, v + 2);
+  }
+}
+
 // --- Near geometry: extruded footprints with per-vertex wall frames ------------------------------------------------------
 function buildNearGeometry(list) {
   const geos = [null, null, null]; // pre-war, glass A, glass B
@@ -173,6 +223,7 @@ function buildNearGeometry(list) {
       for (let k = 0; k < 4; k++) o.info.push(kind, seedTone, i * 3, f.ww);
       for (let k = 0; k < 4; k++) o.paint.push(f.paint[0], f.paint[1], f.paint[2], f.fh);
       o.idx.push(v, v + 2, v + 1, v, v + 3, v + 2);
+      if (kind === WALL_KINDS.entry) addBayWindow(o, b, f, x0, z0, x1, z1, L, nx, nz, H, seedTone, i);
     }
     // flat roof
     const contour = [];
@@ -257,7 +308,7 @@ function buildFarBoxes(list, material) {
 // --- Materials ----------------------------------------------------------------------------------------------------------
 function makeMaterials(mode) {
   return [
-    createPreWarBuildingMaterial({ trimColor: 0xf2ede2, windowGlassColor: 0x1a2632, litProbability: 0.5, warmth: 0.82, seed: 21.7, boxLocal: mode, cornerPier: 0.7, perVertex: true }),
+    createPreWarBuildingMaterial({ trimColor: 0xf2ede2, windowGlassColor: 0x1a2632, litProbability: 0.5, warmth: 0.82, seed: 21.7, boxLocal: mode, cornerPier: 0.7, perVertex: true, acUnits: false, cladding: 'siding' }),
     createCurtainWallMaterial({ glassTint: 0x1a3a52, frameTint: 0x3b4c5b, windowWidth: 2.7, floorHeight: 3.9, litProbability: 0.6, warmth: 0.52, reflectivity: 0.92, seed: 63.5, boxLocal: mode }),
     createCurtainWallMaterial({ glassTint: 0x2a3036, frameTint: 0xb0bcc8, windowWidth: 2.9, floorHeight: 4.0, litProbability: 0.58, warmth: 0.5, reflectivity: 0.95, seed: 94.3, boxLocal: mode })
   ];

@@ -724,10 +724,14 @@ function createPreWarBuildingMaterial(opts = {}) {
     cornerPier = 1.2, // solid masonry at both ends of every wall above the shopfronts (box-local mode)
     // Per-vertex (or per-instance) wall colour & bay layout instead of uniforms: `paint` = (linear rgb, storey height),
     // `wallInfo`.w = window bay width. One material then serves every painted / stucco / masonry building in the city.
-    perVertex = false
+    perVertex = false,
+    // Window air-conditioner units (New York's; San Francisco's mild climate has next to none)
+    acUnits = true,
+    // 'brick' everywhere, or 'siding': painted lap siding & stucco (perVertex: brick where the storey height is < 0)
+    cladding = 'brick'
   } = opts;
 
-  const cacheKey = `${stoneColor}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${cornerPier}_${perVertex}`;
+  const cacheKey = `${stoneColor}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${cornerPier}_${perVertex}_${acUnits}_${cladding}`;
   if (_preWarCache.has(cacheKey)) {
     return _preWarCache.get(cacheKey);
   }
@@ -744,7 +748,9 @@ function createPreWarBuildingMaterial(opts = {}) {
   const cGlass = uniform(new THREE.Color(windowGlassColor));
   const cCrown = uniform(new THREE.Color(crownGlowColor));
   const uWindowWidth = perVertex ? attribute('wallInfo', 'vec4').w : uniform(windowWidth);
-  const uFloorHeight = perVertex ? paintAttr.w : uniform(floorHeight);
+  const uFloorHeight = perVertex ? paintAttr.w.abs() : uniform(floorHeight);
+  // 1 on brick walls, 0 on painted siding / stucco
+  const isBrick = cladding === 'brick' ? float(1.0) : perVertex ? step(paintAttr.w, 0.0) : float(0.0);
   const uLitProbability = uniform(litProbability);
   const uWarmth = uniform(warmth);
   const uCrownGlowHeight = uniform(crownGlowHeight);
@@ -783,7 +789,7 @@ function createPreWarBuildingMaterial(opts = {}) {
   // Window AC units (~12% of upper-floor windows), none in the floor the band course covers
   const beltFloor = step(5.0, mod(floor(gridV), 6.0)).mul(front);
   const acRand = hash2D(cellId.add(vec2(uSeed.mul(1.3).add(7.1), 91.7)));
-  const hasAC = step(0.88, acRand).mul(float(1.0).sub(isGroundFloor)).mul(float(1.0).sub(isRoof)).mul(open).mul(float(1.0).sub(beltFloor));
+  const hasAC = (acUnits ? float(1.0) : float(0.0)).mul(step(0.88, acRand)).mul(float(1.0).sub(isGroundFloor)).mul(float(1.0).sub(isRoof)).mul(open).mul(float(1.0).sub(beltFloor));
 
   mat.colorNode = Fn(() => {
     const oneMinusEffX = float(1.0).sub(effHalfX);
@@ -849,18 +855,22 @@ function createPreWarBuildingMaterial(opts = {}) {
       const pargePatch = smoothstep(0.6, 0.76, noise2D(vec2(uCoord.mul(0.11), vCoord.mul(0.07)).add(tone.mul(37.0))));
       parged.assign(max(step(0.74, fract(tone.mul(3.7))), pargePatch.mul(0.85)));
     });
-    const backTint = mix(backBrick, color(0x8f8b84), parged);
-    const mortarJoint = max(
+    // Siding & stucco buildings: rear & lot-line walls in weathered stucco (greys, beiges), street fronts in lap
+    // siding boards 0.2 m tall (the joints below darkened like mortar, without the vertical joints)
+    const backStucco = mix(color(0x9d978c), color(0xbdb19c), fract(tone.mul(5.17)));
+    const backTint = mix(mix(backStucco, backBrick, isBrick), color(0x8f8b84), parged);
+    const boardJoint = gridLine(vCoord, 0.2, 0.014).mul(front).mul(0.7);
+    const mortarJoint = mix(boardJoint, max(
       gridLine(colCoord.mul(brickL), brickL, 0.016),
       gridLine(vCoord, brickH, 0.016)
-    ).mul(float(1.0).sub(isRoof)).mul(float(1.0).sub(parged)).mul(float(1.0).sub(coping));
+    ), isBrick).mul(float(1.0).sub(isRoof)).mul(float(1.0).sub(parged)).mul(float(1.0).sub(coping));
 
     // Per-brick tint fades out once bricks shrink to a pixel (and soot streaks once they do), so neither can shimmer
     const uFw = fwidth(uCoord);
     const brickVar = float(1.0).sub(smoothstep(0.5, 1.0, max(uFw.div(brickL), fwidth(rowCoord))));
     const brickCell = vec2(floor(colCoord), courseRow);
-    const brickRnd = hash2D(brickCell.add(vec2(uSeed, 5.3))).sub(0.5).mul(brickVar);
-    const brickWarmShift = hash2D(brickCell.add(vec2(17.1, uSeed))).sub(0.5).mul(0.12).mul(brickVar);
+    const brickRnd = hash2D(brickCell.add(vec2(uSeed, 5.3))).sub(0.5).mul(brickVar).mul(mix(float(0.25), float(1.0), isBrick));
+    const brickWarmShift = hash2D(brickCell.add(vec2(17.1, uSeed))).sub(0.5).mul(0.12).mul(brickVar).mul(isBrick);
     const brickShiftVec = vec3(float(1.0).add(brickWarmShift), float(1.0), float(1.0).sub(brickWarmShift));
 
     const streakNoise = mix(float(0.5), noise2D(vec2(uCoord.mul(1.4), vCoord.mul(0.05))), float(1.0).sub(smoothstep(0.5, 1.0, uFw.mul(1.4))));
@@ -1019,7 +1029,9 @@ function createPreWarBuildingMaterial(opts = {}) {
     const colCoord = uCoord.div(brickL).add(mod(courseRow, 2.0).mul(0.5));
     const distU = float(0.5).sub(abs(fract(colCoord).sub(0.5))).mul(brickL);
     const distV = float(0.5).sub(abs(fract(rowCoord).sub(0.5))).mul(brickH);
-    const brickDome = smoothstep(0.0, 0.018, distU).mul(smoothstep(0.0, 0.018, distV)).mul(0.0045)
+    // (siding: each board's lap, thicker at its foot)
+    const boardLap = float(1.0).sub(fract(vCoord.div(0.2))).mul(0.004).mul(front);
+    const brickDome = mix(boardLap, smoothstep(0.0, 0.018, distU).mul(smoothstep(0.0, 0.018, distV)).mul(0.0045), isBrick)
       .mul(float(1.0).sub(smoothstep(0.006, 0.012, footprint)));
 
     const sillLedge = filteredPulse(cellUV.y, effHalfY.sub(0.032), effHalfY, ramp.y).mul(inX).mul(0.016);
@@ -2676,7 +2688,8 @@ function createTerrainMaterial() {
   const wOpen = clamp(float(1.0).sub(wRoad).sub(wPark).sub(wSand).sub(wLot), 0.0, 1.0);
   const steep = smoothstep(0.22, 0.5, float(1.0).sub(normalWorldGeometry.y)).mul(float(1.0).sub(wRoad));
 
-  mat.aoNode = canyonSkyAONode();
+  // Street canyons shade the roadways & sidewalks; parks, beaches & open hillsides see the whole sky
+  mat.aoNode = mix(canyonSkyAONode(), float(1.0), clamp(wPark.add(wSand).add(steep), 0.0, 1.0));
 
   mat.colorNode = Fn(() => {
     const xz = positionWorld.xz;

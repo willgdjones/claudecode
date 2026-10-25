@@ -1,0 +1,11 @@
+{
+  "name": "slop-sanfrancisco",
+  "private": true,
+  "description": "San Francisco city simulation (three.js WebGPU/TSL). The site needs no build step; this file only serves the Node tests.",
+  "scripts": {
+    "test": "node --test tests/*.test.*"
+  },
+  "devDependencies": {
+    "three": "0.186.1"
+  }
+}

@@ -1,41 +1,35 @@
 import * as THREE from 'three/webgpu';
 import { CROSSWALK } from './road-network.js';
 import { createRoadPaintMaterial } from './tsl-materials.js';
+import { heightAt } from './terrain.js';
 
 // js/road-paint.js
 // Road markings generated from the drivable road network (js/road-network.js), so the paint matches where traffic
 // actually drives and stops: dashed lane lines, double yellow centre lines on two-way roads, stop bars at the stop
-// lines, continental crosswalks across every intersection approach and green bike lanes along wide one-way avenues.
+// lines, continental crosswalks across every intersection approach and green bike lanes along wide one-way roads.
+// San Francisco has some 2,300 km of lanes' worth of markings over its hills: they are worked out once as strips,
+// then draped over the ground (every few metres) only in the 500 m tiles around the camera.
 
 const WHITE = new THREE.Color(0xe6e2d6);
 const YELLOW = new THREE.Color(0xe8ad22);
 const GREEN = new THREE.Color(0x2a8a4e);
-const HEIGHT = 0.012; // above the asphalt
+const HEIGHT = 0.03; // above the asphalt (the ground mesh's facets stay within a few cm of heightAt)
+const TILE = 500;
+const NEAR = 650; // tiles whose nearest point is this close get their paint
+const STEP = 3; // m between the points where a strip follows the ground
 
 function buildRoadPaint(scene, network) {
-  const position = [];
-  const side = [];
-  const paint = [];
-  const colors = [];
-  const index = [];
+  const strips = new Map(); // tile key -> [ax, az, bx, bz, w, col, period, duty, phase, flow]
   const lines = [];
   const bends = new Map();
 
-  // Flat strip w wide from a to b, with a dash pattern (period, duty cycle) running along it
+  // Strip w wide from a to b, with a dash pattern (period, duty cycle) running along it (built later, see tileMesh)
   function strip(ax, az, bx, bz, w, col, period = 1, duty = 1, phase = 0, flow = 1) {
-    const len = Math.hypot(bx - ax, bz - az);
-    if (len < 0.05) return;
-    const sx = ((az - bz) / len) * w * 0.5;
-    const sz = ((bx - ax) / len) * w * 0.5;
-    const i = position.length / 3;
-    const end = phase + len * flow;
-    for (const [x, z, s, u] of [[ax, az, -1, phase], [ax, az, 1, phase], [bx, bz, 1, end], [bx, bz, -1, end]]) {
-      position.push(x + sx * s, HEIGHT, z + sz * s);
-      side.push(sx * s, sz * s);
-      paint.push(u, period, duty);
-      colors.push(col.r, col.g, col.b);
-    }
-    index.push(i, i + 1, i + 2, i, i + 2, i + 3);
+    if (Math.hypot(bx - ax, bz - az) < 0.05) return;
+    const key = `${Math.floor((ax + bx) / 2 / TILE)},${Math.floor((az + bz) / 2 / TILE)}`;
+    let list = strips.get(key);
+    if (!list) strips.set(key, (list = []));
+    list.push([ax, az, bx, bz, w, col, period, duty, phase, flow]);
   }
 
   // Edges run between stop lines; s is measured from the start one and o to the right of the centre line
@@ -184,23 +178,84 @@ function buildRoadPaint(scene, network) {
     }
   }
 
-  const normal = new Float32Array(position.length);
-  for (let i = 1; i < normal.length; i += 3) normal[i] = 1;
+  // Geometry of one tile's strips, each draped over the ground every STEP metres
+  const material = createRoadPaintMaterial();
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -2;
+  material.polygonOffsetUnits = -2;
+  function tileMesh(list) {
+    const position = [], side = [], paint = [], colors = [], index = [];
+    for (const [ax, az, bx, bz, w, col, period, duty, phase, flow] of list) {
+      const len = Math.hypot(bx - ax, bz - az);
+      const sx = ((az - bz) / len) * w * 0.5;
+      const sz = ((bx - ax) / len) * w * 0.5;
+      const n = Math.max(1, Math.ceil(len / STEP));
+      const i0 = position.length / 3;
+      for (let k = 0; k <= n; k++) {
+        const t = k / n;
+        const x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+        const u = phase + len * flow * t;
+        for (const s of [-1, 1]) {
+          const px = x + sx * s, pz = z + sz * s;
+          position.push(px, heightAt(px, pz) + HEIGHT, pz);
+          side.push(sx * s, sz * s);
+          paint.push(u, period, duty);
+          colors.push(col.r, col.g, col.b);
+        }
+      }
+      for (let k = 0; k < n; k++) {
+        const q = i0 + k * 2; // q: -1 side, q + 1: +1 side, q + 2 / q + 3: the next pair
+        index.push(q, q + 1, q + 3, q, q + 3, q + 2);
+      }
+    }
+    const normal = new Float32Array(position.length);
+    for (let i = 1; i < normal.length; i += 3) normal[i] = 1;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geometry.setAttribute('side', new THREE.Float32BufferAttribute(side, 2));
+    geometry.setAttribute('paint', new THREE.Float32BufferAttribute(paint, 3));
+    geometry.setIndex(position.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(index, 1) : new THREE.Uint16BufferAttribute(index, 1));
+    geometry.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = 'RoadMarkings';
+    mesh.receiveShadow = true;
+    mesh.matrixAutoUpdate = false;
+    mesh.renderOrder = -1; // under the other see-through ground effects (contact shadows, headlight beams)
+    return mesh;
+  }
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(position, 3));
-  geometry.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  geometry.setAttribute('side', new THREE.Float32BufferAttribute(side, 2));
-  geometry.setAttribute('paint', new THREE.Float32BufferAttribute(paint, 3));
-  geometry.setIndex(index);
-
-  const mesh = new THREE.Mesh(geometry, createRoadPaintMaterial());
-  mesh.name = 'RoadMarkings';
-  mesh.receiveShadow = true;
-  mesh.renderOrder = -1; // under the other see-through ground effects (contact shadows, headlight beams)
-  scene.add(mesh);
-  return mesh;
+  const group = new THREE.Group();
+  group.name = 'RoadMarkingsTiles';
+  scene.add(group);
+  const live = new Map(); // tile key -> mesh
+  function update(x, z, budget = 2) {
+    for (const [key, mesh] of live) {
+      const [tx, tz] = key.split(',').map(Number);
+      const dx = Math.max(tx * TILE - x, 0, x - (tx + 1) * TILE), dz = Math.max(tz * TILE - z, 0, z - (tz + 1) * TILE);
+      if (Math.hypot(dx, dz) > NEAR + 200) {
+        group.remove(mesh);
+        mesh.geometry.dispose();
+        live.delete(key);
+      }
+    }
+    const want = [];
+    for (const key of strips.keys()) {
+      if (live.has(key)) continue;
+      const [tx, tz] = key.split(',').map(Number);
+      const dx = Math.max(tx * TILE - x, 0, x - (tx + 1) * TILE), dz = Math.max(tz * TILE - z, 0, z - (tz + 1) * TILE);
+      const d = Math.hypot(dx, dz);
+      if (d < NEAR) want.push([d, key]);
+    }
+    want.sort((a, b) => a[0] - b[0]);
+    for (const [, key] of want.slice(0, budget)) {
+      const mesh = tileMesh(strips.get(key));
+      group.add(mesh);
+      live.set(key, mesh);
+    }
+  }
+  return { group, update, material };
 }
 
 export { buildRoadPaint };

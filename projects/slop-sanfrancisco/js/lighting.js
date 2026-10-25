@@ -32,6 +32,7 @@ import { heightAt } from './terrain.js';
 // often belong to the marine layer — Karl the Fog — a grey slab a couple of hundred metres thick that the hilltops,
 // Sutro Tower and the downtown towers rise out of (low haze scale height, see fogHeight & createAerialFogNode).
 
+// (Haze is thinner than the New York original's: San Francisco's views run 5-15 km across the Bay to the hills)
 const TIME_PRESETS = {
   golden: {
     id: 'golden',
@@ -46,7 +47,7 @@ const TIME_PRESETS = {
     skyTop: 0x2c568c,
     skyHorizon: 0xebd1b5,
     fogColor: 0xdcc5ae,
-    fogDensity: 0.00024,
+    fogDensity: 0.00013,
     fogHeight: 900,
     interiorGlow: 0.48,
     roadWetness: 0.28,
@@ -73,7 +74,7 @@ const TIME_PRESETS = {
     skyTop: 0x225ea8,
     skyHorizon: 0xc8dff5,
     fogColor: 0xc6dcf2,
-    fogDensity: 0.00018,
+    fogDensity: 0.0001,
     fogHeight: 900,
     interiorGlow: 0.24,
     roadWetness: 0.08,
@@ -100,7 +101,7 @@ const TIME_PRESETS = {
     skyTop: 0x102248,
     skyHorizon: 0xb86b6c,
     fogColor: 0x353c58,
-    fogDensity: 0.00032,
+    fogDensity: 0.00019,
     fogHeight: 900,
     interiorGlow: 1.25,
     roadWetness: 0.55,
@@ -127,7 +128,7 @@ const TIME_PRESETS = {
     skyTop: 0x060c1a,
     skyHorizon: 0x182640,
     fogColor: 0x0c1424,
-    fogDensity: 0.00036,
+    fogDensity: 0.00022,
     fogHeight: 900,
     interiorGlow: 1.55,
     roadWetness: 0.62,

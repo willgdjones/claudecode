@@ -74,16 +74,24 @@ const parks = [];
     const g = f.geometry;
     for (const poly of g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]) R.fillRing(poly[0].map(([lon, lat]) => toWorld(lon, lat)), 1);
   }
-  for (let k = 0; k < ground.length; k++) if (R.d[k] && (ground[k] === C_OPEN || ground[k] === C_PARCEL)) ground[k] = C_PARK;
-  // Beaches: low open ground near the sea
-  const W = TERRAIN.w;
-  R.d.fill(0);
-  for (let k = 0; k < ground.length; k++) R.d[k] = T.water[k] === 1 ? 1 : 0;
-  const toSea = R.edt((v) => v === 1);
-  for (let k = 0; k < ground.length; k++) {
-    if ((ground[k] === C_OPEN || ground[k] === C_PARK) && T.hgt[k] < 5.5 && toSea[k] * TERRAIN.res * TERRAIN.res < 120 * 120) ground[k] = C_SAND;
+  // (the raster is a cell wider & taller than the terrain grid: index it by its own width)
+  const W = TERRAIN.w, Hh = TERRAIN.h;
+  for (let j = 0; j < Hh; j++) {
+    for (let i = 0; i < W; i++) {
+      const k = j * W + i;
+      if (R.d[j * R.w + i] && (ground[k] === C_OPEN || ground[k] === C_PARCEL)) ground[k] = C_PARK;
+    }
   }
-  void W;
+  // Beaches: low open ground near the sea
+  R.d.fill(0);
+  for (let j = 0; j < Hh; j++) for (let i = 0; i < W; i++) R.d[j * R.w + i] = T.water[j * W + i] === 1 ? 1 : 0;
+  const toSea = R.edt((v) => v === 1);
+  for (let j = 0; j < Hh; j++) {
+    for (let i = 0; i < W; i++) {
+      const k = j * W + i;
+      if ((ground[k] === C_OPEN || ground[k] === C_PARK) && T.hgt[k] < 5.5 && toSea[j * R.w + i] * TERRAIN.res * TERRAIN.res < 120 * 120) ground[k] = C_SAND;
+    }
+  }
 }
 lap(`ground classes (${parks.length} park outlines)`);
 

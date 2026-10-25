@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { createTreeMaterial } from './tsl-materials.js';
+import { heightAt } from './terrain.js';
 
 // js/trees.js
 // Procedural NYC street & park trees, planted by street-details.js (section 7):
@@ -983,7 +984,7 @@ function createTreeField(scene, sites) {
     cam.copy(position);
     if (cam.distanceToSquared(last) < 16) return false;
     last.copy(cam);
-    const low = cam.y < 40;
+    const low = cam.y - heightAt(cam.x, cam.z) < 40;
     let changed = false;
     for (let i = 0; i < N; i++) {
       const dx = px[i] - cam.x;
@@ -1019,7 +1020,7 @@ function createTreeField(scene, sites) {
   };
 
   // Levels for the start-up view (Midtown, 5th Ave), so the precompile pass sees the tree meshes
-  update(new V3(0, 10, 140));
+  update(new V3(0, heightAt(0, 0) + 10, 0));
 
   // Precompile one visible representative per geometry; the other cells use exactly the same pipeline.
   for (const type of types) {

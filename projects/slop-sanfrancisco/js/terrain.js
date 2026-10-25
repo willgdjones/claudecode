@@ -40,7 +40,8 @@ function heightAt(x, z) {
 /** Ground class of the 4 m cell under (x, z) (G.*); outside the city grid: water or open ground from the Bay ring */
 function groundAt(x, z) {
   const i = Math.floor((x - X0) / RES), j = Math.floor((z - Z0) / RES);
-  if (i < 0 || j < 0 || i >= W || j >= H) return bayHeight(x, z) > SEA_LEVEL + 0.4 ? G.OPEN : G.WATER;
+  // (the Bay ring stores open water as 0 m, its land rounded to 0.5 m steps)
+  if (i < 0 || j < 0 || i >= W || j >= H) return bayHeight(x, z) > 0.4 ? G.OPEN : G.WATER;
   return GROUND[j * W + i];
 }
 

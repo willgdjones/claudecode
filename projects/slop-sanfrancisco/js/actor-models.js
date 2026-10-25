@@ -1171,18 +1171,14 @@ function createLoftedCarMaterial(spec, fixedColorHex = null) {
   );
 
   // ---- Colour ---------------------------------------------------------------------------------------------------
-  // Liveries: NYPD (white with blue & light-blue side stripes, lettering on the front doors); the taxi's door badges
+  // Liveries: SFPD black-and-white (black body, white doors, a gold star on the front doors); the taxi's door badges
   // and medallion number
   const isPolice = step(0.5, state.w).mul(isSide).mul(isBody);
   const doorMid = (spec.doors[0] + spec.doors[1]) / 2;
-  const along = smoothstep(spec.zRear + 0.22, spec.zRear + 0.3, p.z).mul(smoothstep(spec.zFront - 0.28, spec.zFront - 0.36, p.z));
-  const band = smoothstep(0.495, 0.5, p.y).mul(smoothstep(0.645, 0.64, p.y)).mul(along);
-  const pin = smoothstep(0.663, 0.667, p.y).mul(smoothstep(0.687, 0.683, p.y)).mul(along);
-  const lettering = step(0.45, sin(p.z.mul(70.0)))
-    .mul(smoothstep(0.725, 0.73, p.y))
-    .mul(smoothstep(0.81, 0.805, p.y))
-    .mul(step(abs(p.z.sub(doorMid)), 0.22));
-  let painted = mix(mix(paint, color(0x1d3f8f), max(band, lettering).mul(isPolice)), color(0x6fa8dc), pin.mul(isPolice));
+  const doorPanel = smoothstep(spec.doors[0] - 0.62, spec.doors[0] - 0.58, p.z).mul(smoothstep(spec.doors[1] + 0.62, spec.doors[1] + 0.58, p.z))
+    .mul(smoothstep(0.42, 0.45, p.y)).mul(smoothstep(0.86, 0.83, p.y));
+  const star = smoothstep(0.075, 0.06, length(vec2(p.z.sub(spec.doors[1] - 0.1), p.y.sub(0.66))));
+  let painted = mix(mix(mix(paint, color(0x111214), isPolice), color(0xf4f5f2), doorPanel.mul(isPolice)), color(0xc9a23a), star.mul(isPolice));
   if (spec.sign) {
     const badge = roundedRect(vec2(p.z.sub(doorMid), p.y.sub(0.66)), vec2(0.21, 0.052), 0.012).mul(isSide).mul(isBody);
     const emblem = smoothstep(0.042, 0.036, length(vec2(abs(p.z.sub(doorMid)).sub(0.15), p.y.sub(0.66))));
@@ -1509,7 +1505,7 @@ let _busLoftedMat = null;
  * - Wraparound split windshield with gasket & centre post, destination sign band above it; rear window & engine
  *   louvres on the rear face
  * - Continuous side window band with mullions, the driver's window, glazed curb-side front & rear doors
- * - MTA livery: pearl white with the vivid blue band & cyan ribbon below the windows and a dark skirt
+ * - Muni livery: white & silver with the red band below the windows and a dark skirt
  * - Headlamps, turn signals (per-instance `busState`: brake, left (+x), right (-x)), tail / brake light columns,
  *   NY plates; black trims & light-grey roof pods
  */
@@ -1561,12 +1557,12 @@ function createLoftedBusMaterial() {
   const glass = clamp(max(max(frontGlass, rearGlass), max(max(sideBand.mul(mullion), driverWin), max(d0.glass, d1.glass))), 0.0, 1.0);
   const seal = clamp(max(max(frontSeal, rearSeal), max(max(sideSeal, signBand), doorFrame)), 0.0, 1.0);
 
-  // MTA livery
+  // Muni livery: white & silver with the red band along the windows' sills and a dark skirt
   const shadeY = smoothstep(0.34, 1.2, p.y).mul(0.2).add(0.8);
-  const blueStripe = smoothstep(0.9, 0.93, p.y).mul(smoothstep(1.2, 1.17, p.y));
-  const cyanRibbon = smoothstep(0.84, 0.86, p.y).mul(smoothstep(0.885, 0.865, p.y));
+  const redBand = smoothstep(0.9, 0.93, p.y).mul(smoothstep(1.2, 1.17, p.y));
+  const silverRibbon = smoothstep(0.84, 0.86, p.y).mul(smoothstep(0.885, 0.865, p.y));
   const skirt = smoothstep(0.53, 0.5, p.y);
-  const livery = mix(mix(mix(color(0xf0f4f8), color(0x0058b8), blueStripe), color(0x00a8e8), cyanRibbon), color(0x1c2026), skirt).mul(shadeY);
+  const livery = mix(mix(mix(color(0xf2f2ef), color(0xbf1f2f), redBand), color(0xb8bcc0), silverRibbon), color(0x1c2026), skirt).mul(shadeY);
 
   // Lamps: twin round headlamps & amber turn signals in black pods; red tail / brake light columns, amber turn &
   // white reverse lamps at the rear corners; plates
