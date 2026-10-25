@@ -21,6 +21,7 @@ const TILE = GEO.buildings.tile; // 500 m
 const CHUNK = 1000;
 const NEAR_DIST = 1100;
 const FAR_DIST = 1350; // hysteresis
+const MINOR_DIST = 3000; // small buildings' far boxes are drawn within this distance of their chunk
 
 function hash(n) {
   const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
@@ -339,24 +340,30 @@ function buildCityBlocks(scene) {
     if (!c) chunks.set(key, (c = { tiles: [] }));
     c.tiles.push(t);
   }
-  // One instanced mesh per chunk & far material; each tile remembers its instance ranges to hide them when near
+  // One instanced mesh per chunk & far material, and one more for the chunk's small buildings (houses, sheds: most of
+  // the city's 175,000), which are only drawn within MINOR_DIST; each tile remembers its instance ranges to hide them
+  // when near
+  const minor = (b) => b.top - b.base < 15 && (b.maxX - b.minX) * (b.maxZ - b.minZ) < 900;
+  const meshOf = (b) => (minor(b) ? 3 : facadeOf(b).glass);
   for (const c of chunks.values()) {
-    const byMat = [[], [], []];
+    const byMesh = [[], [], [], []];
     for (const t of c.tiles) {
       t.ranges = [];
-      for (let m = 0; m < 3; m++) {
-        const items = t.list.filter((b) => facadeOf(b).glass === m);
-        t.ranges.push([m, byMat[m].length, items.length]);
-        byMat[m].push(...items);
+      for (let m = 0; m < 4; m++) {
+        const items = t.list.filter((b) => meshOf(b) === m);
+        t.ranges.push([m, byMesh[m].length, items.length]);
+        byMesh[m].push(...items);
       }
     }
-    c.meshes = byMat.map((items, m) => {
+    c.meshes = byMesh.map((items, m) => {
       if (!items.length) return null;
-      const mesh = buildFarBoxes(items, farMats[m]);
-      mesh.name = 'FarBuildings';
+      const mesh = buildFarBoxes(items, farMats[m === 3 ? 0 : m]);
+      mesh.name = m === 3 ? 'FarHouses' : 'FarBuildings';
       group.add(mesh);
       return mesh;
     });
+    c.x = Math.floor((c.tiles[0].tx * TILE) / CHUNK) * CHUNK;
+    c.z = Math.floor((c.tiles[0].tz * TILE) / CHUNK) * CHUNK;
     for (const t of c.tiles) t.chunk = c;
   }
   console.info(`[buildings] ${BUILDINGS.length} buildings in ${tiles.size} tiles, ${chunks.size} far chunks`);
@@ -410,6 +417,11 @@ function buildCityBlocks(scene) {
         setFarVisible(t, true);
         t.isNear = false;
       }
+    }
+    for (const c of chunks.values()) {
+      if (!c.meshes[3]) continue;
+      const dx = Math.max(c.x - x, 0, x - c.x - CHUNK), dz = Math.max(c.z - z, 0, z - c.z - CHUNK);
+      c.meshes[3].visible = dx * dx + dz * dz < MINOR_DIST * MINOR_DIST;
     }
     order.sort((a, b) => a.dist - b.dist);
     for (const t of order) {

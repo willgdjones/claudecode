@@ -217,7 +217,7 @@ function buildWater(scene) {
 
 // --- The Bay ring: hills around the Bay from the 32 m grid, sampled every 64 m --------------------------------------
 function buildBayRing(scene) {
-  const STEP = 2;
+  const STEP = 3; // 96 m: a backdrop kilometres away (the hills keep their silhouettes)
   const nx = Math.floor((BAY.w - 1) / STEP) + 1, nz = Math.floor((BAY.h - 1) / STEP) + 1;
   const pos = new Float32Array(nx * nz * 3);
   const gnd = new Uint8Array(nx * nz * 4);

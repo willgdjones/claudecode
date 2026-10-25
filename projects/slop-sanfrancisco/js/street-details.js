@@ -61,7 +61,7 @@ function createWalkSignalMaterial(clock, offset) {
 }
 
 const TILE = 500;
-const NEAR = 700; // street furniture drawn within this distance of the camera's tile
+const NEAR = 550; // street furniture drawn within this distance of the camera's tile
 
 const hash = (a, b) => {
   const v = Math.sin(a * 12.9898 + b * 78.233) * 43758.5453;
@@ -95,16 +95,16 @@ function buildStreetDetails(scene, network) {
   const signalLensGeo = mergeGeometries(LENS_Y.map((ly) => new THREE.CircleGeometry(LENS_R, 18).translate(0, ly, HEAD_D / 2 + 0.004)));
   const walkHousingGeo = new THREE.BoxGeometry(0.34, 0.4, 0.24);
   const walkPanelGeo = new THREE.PlaneGeometry(0.27, 0.31).translate(0, 0, 0.125);
-  const lampHousingGeo = new THREE.SphereGeometry(1, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2).scale(0.7, 0.2, 0.3);
-  const lampLensGeo = new THREE.CircleGeometry(1, 16).rotateX(Math.PI / 2).scale(0.6, 1, 0.24).translate(0, -0.005, 0);
-  const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 10);
+  const lampHousingGeo = new THREE.SphereGeometry(1, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2).scale(0.7, 0.2, 0.3);
+  const lampLensGeo = new THREE.CircleGeometry(1, 8).rotateX(Math.PI / 2).scale(0.6, 1, 0.24).translate(0, -0.005, 0);
+  const unitCyl = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
   const unitBox = new THREE.BoxGeometry(1, 1, 1);
   const hydrantGeo = mergeGeometries([
-    new THREE.CylinderGeometry(0.13, 0.15, 0.62, 12).translate(0, 0.31, 0),
-    new THREE.CylinderGeometry(0.06, 0.06, 0.42, 8).rotateZ(Math.PI / 2).translate(0, 0.42, 0),
-    new THREE.CylinderGeometry(0.19, 0.19, 0.06, 12).translate(0, 0.03, 0)
+    new THREE.CylinderGeometry(0.13, 0.15, 0.62, 8).translate(0, 0.31, 0),
+    new THREE.CylinderGeometry(0.06, 0.06, 0.42, 6).rotateZ(Math.PI / 2).translate(0, 0.42, 0),
+    new THREE.CylinderGeometry(0.19, 0.19, 0.06, 8).translate(0, 0.03, 0)
   ].map((g) => g.toNonIndexed()));
-  const bonnetGeo = new THREE.SphereGeometry(0.15, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2).translate(0, 0.62, 0);
+  const bonnetGeo = new THREE.SphereGeometry(0.15, 8, 3, 0, Math.PI * 2, 0, Math.PI / 2).translate(0, 0.62, 0);
 
   // Instances by 500 m tile & part: a whole city of street furniture is far too much to draw at once, so only the tiles
   // near the camera are shown (update)
