@@ -238,7 +238,11 @@ function buildBayRing(scene) {
       pos[v * 3] = x;
       pos[v * 3 + 1] = y;
       pos[v * 3 + 2] = z;
-      gnd[v * 4 + 1] = 200; // park-ish scrub & grass
+      // the flats round the Bay are built up (Oakland, Alameda, Sausalito, the Peninsula): urban grey; the hills above
+      // them scrub & grass
+      const urban = Math.min(1, Math.max(0, (70 - y) / 40));
+      gnd[v * 4 + 1] = Math.round(200 * (1 - urban));
+      gnd[v * 4 + 3] = Math.round(220 * urban);
     }
   }
   const idx = [];
