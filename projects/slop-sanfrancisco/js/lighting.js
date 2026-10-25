@@ -15,24 +15,29 @@ import {
   max,
   exp,
   abs,
-  select
+  select,
+  clamp
 } from 'three/tsl';
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
 import { SunLight } from 'three/addons/lights/SunLight.js';
 import { SunLightNode } from 'three/addons/lights/SunLightNode.js';
 import { cityUniforms } from './tsl-materials.js';
+import { heightAt } from './terrain.js';
 
 // js/lighting.js
 // Physically-Based Atmospheric Sky (Preetham SkyMesh + Beer-Powder Clouds),
 // Live PMREMGenerator IBL Cubemap, Three.js r186 SunLight (2-Cascade CSM),
-// and Occlusion-Aware Urban Canyon Global Illumination for Three.js r186 WebGPURenderer
+// and Occlusion-Aware Urban Canyon Global Illumination for Three.js r186 WebGPURenderer.
+// San Francisco's light: summer evenings set over the Pacific (sun to the west-north-west, x < 0, z < 0); mornings
+// often belong to the marine layer — Karl the Fog — a grey slab a couple of hundred metres thick that the hilltops,
+// Sutro Tower and the downtown towers rise out of (low haze scale height, see fogHeight & createAerialFogNode).
 
 const TIME_PRESETS = {
   golden: {
     id: 'golden',
-    name: 'Golden Hour · 17:45',
-    // Crisp Manhattan canyon sun slicing across avenues & intersections so buildings, cars, trees & pedestrians cast sharp shadows
-    sunDir: new THREE.Vector3(-0.44, 0.58, -0.68).normalize(),
+    name: 'Golden Hour · 19:45',
+    // Low summer sun over the Pacific, raking down the east-west streets and lighting the hills' western faces
+    sunDir: new THREE.Vector3(-0.82, 0.36, -0.34).normalize(),
     sunColor: 0xffca92,
     sunIntensity: 5.8,
     hemiSky: 0x9abbe6,
@@ -42,6 +47,7 @@ const TIME_PRESETS = {
     skyHorizon: 0xebd1b5,
     fogColor: 0xdcc5ae,
     fogDensity: 0.00024,
+    fogHeight: 900,
     interiorGlow: 0.48,
     roadWetness: 0.28,
     envIntensity: 0.54,
@@ -58,7 +64,7 @@ const TIME_PRESETS = {
   midday: {
     id: 'midday',
     name: 'Sunny Midday · 13:30',
-    sunDir: new THREE.Vector3(-0.34, 0.82, -0.46).normalize(),
+    sunDir: new THREE.Vector3(0.12, 0.86, 0.48).normalize(),
     sunColor: 0xfff5e8,
     sunIntensity: 6.6,
     hemiSky: 0xaad2ff,
@@ -68,6 +74,7 @@ const TIME_PRESETS = {
     skyHorizon: 0xc8dff5,
     fogColor: 0xc6dcf2,
     fogDensity: 0.00018,
+    fogHeight: 900,
     interiorGlow: 0.24,
     roadWetness: 0.08,
     envIntensity: 0.58,
@@ -84,7 +91,7 @@ const TIME_PRESETS = {
   twilight: {
     id: 'twilight',
     name: 'Blue Hour · 19:15',
-    sunDir: new THREE.Vector3(-0.52, 0.36, -0.77).normalize(),
+    sunDir: new THREE.Vector3(-0.86, 0.2, -0.36).normalize(),
     sunColor: 0xff9466,
     sunIntensity: 3.1,
     hemiSky: 0x4c6ca8,
@@ -94,6 +101,7 @@ const TIME_PRESETS = {
     skyHorizon: 0xb86b6c,
     fogColor: 0x353c58,
     fogDensity: 0.00032,
+    fogHeight: 900,
     interiorGlow: 1.25,
     roadWetness: 0.55,
     envIntensity: 0.36,
@@ -109,7 +117,7 @@ const TIME_PRESETS = {
   },
   midnight: {
     id: 'midnight',
-    name: 'Manhattan Night · 23:00',
+    name: 'Night · 23:00',
     sunDir: new THREE.Vector3(0.42, 0.68, -0.60).normalize(),
     sunColor: 0x8cb0e8,
     sunIntensity: 1.45,
@@ -120,6 +128,7 @@ const TIME_PRESETS = {
     skyHorizon: 0x182640,
     fogColor: 0x0c1424,
     fogDensity: 0.00036,
+    fogHeight: 900,
     interiorGlow: 1.55,
     roadWetness: 0.62,
     envIntensity: 0.30,
@@ -132,6 +141,35 @@ const TIME_PRESETS = {
     cloudDensity: 0.25,
     skyExposure: 0.022,
     nightFactor: 0.86
+  },
+  marine: {
+    id: 'marine',
+    name: 'Marine Layer · 07:30',
+    // Karl the Fog: a soft morning sun from the east barely breaking through a grey overcast; dense haze close to the
+    // ground thinning out within ~170 m of height, so Twin Peaks, Sutro Tower & the tallest towers rise above it
+    sunDir: new THREE.Vector3(0.78, 0.34, 0.2).normalize(),
+    sunColor: 0xdfe3e6,
+    sunIntensity: 1.25,
+    hemiSky: 0xc4ccd2,
+    hemiGround: 0x8c8a84,
+    hemiIntensity: 1.9,
+    skyTop: 0x8d99a3,
+    skyHorizon: 0xc9cfd3,
+    fogColor: 0xbcc3c8,
+    fogDensity: 0.0026,
+    fogHeight: 170,
+    interiorGlow: 0.62,
+    roadWetness: 0.66,
+    envIntensity: 0.62,
+    canyonBounce: 0.2,
+    turbidity: 10.0,
+    rayleigh: 1.2,
+    mieCoefficient: 0.02,
+    mieDirectionalG: 0.6,
+    cloudCoverage: 0.96,
+    cloudDensity: 0.85,
+    skyExposure: 0.11,
+    nightFactor: 0.0
   }
 };
 
@@ -176,7 +214,9 @@ class LightingSystem {
     const rawSkyNode = this.sky.material.colorNode;
     this.sky.material.colorNode = Fn(() => {
       const raw = rawSkyNode;
-      const dayCol = raw.rgb.mul(this.uSkyExposure);
+      // Clamped: some GPUs / software rasterisers return NaN or huge radiance in places, which bloom would smear into
+      // a white veil over the whole frame (and the baked environment map would carry into the fog colour)
+      const dayCol = clamp(raw.rgb.mul(this.uSkyExposure), 0.0, 40.0);
       const finalSky = mix(dayCol, this.uNightSkyColor, this.uNightFactor);
       return vec4(finalSky, float(1.0));
     })();
@@ -186,7 +226,9 @@ class LightingSystem {
       const rawSkyVertexNode = this.sky.material.vertexNode;
       this.sky.material.vertexNode = Fn(() => {
         const pos = rawSkyVertexNode.toVar();
-        pos.z.assign(0.0);
+        // a hair in front of the far plane: exactly 0 ties with the cleared depth, and rasterisers that round it a
+        // little below would drop the sky (leaving the frame uncleared behind the city)
+        pos.z.assign(pos.w.mul(1e-6));
         return pos;
       })();
     }
@@ -227,7 +269,7 @@ class LightingSystem {
     // radiance just above the horizon in their view direction (sun glow included), through an exponential haze layer
     // so helicopter / observatory views stay clearer than the horizon.
     this.uFogDensity = uniform(TIME_PRESETS.golden.fogDensity);
-    this.uFogHeight = uniform(900.0);
+    this.uFogHeight = uniform(TIME_PRESETS.golden.fogHeight);
     if (this.envRenderTarget) this.scene.fogNode = this.createAerialFogNode();
   }
 
@@ -240,7 +282,7 @@ class LightingSystem {
     // Mean haze density exp(-y / H) along the ray between the fragment and the camera
     const H = this.uFogHeight;
     const ya = max(positionWorld.y, 0.0);
-    const yb = max(cameraPosition.y, 0.0);
+    const yb = max(cameraPosition.y, 0.0); // (y = height above NAVD88: the haze thins with altitude, as over the real Bay)
     const dy = yb.sub(ya);
     const ea = exp(ya.div(H).negate());
     const eb = exp(yb.div(H).negate());
@@ -282,6 +324,7 @@ class LightingSystem {
     this.scene.fog.color.setHex(p.fogColor);
     this.scene.fog.density = p.fogDensity;
     if (this.uFogDensity) this.uFogDensity.value = p.fogDensity;
+    if (this.uFogHeight) this.uFogHeight.value = p.fogHeight ?? 900;
 
     // Update physical Preetham SkyMesh uniforms
     this.sky.turbidity.value = p.turbidity;
@@ -313,7 +356,8 @@ class LightingSystem {
     // every frame inside SunShadowNode.renderShadow(), splitting [near, far] halfway between a uniform and a
     // logarithmic split (the near cascade ends at ~far / 4). Keep far at 300 m at street level so the near cascade
     // stays sharp, and expand it with altitude (helicopter / observatory) so shadows reach all the way down to street level.
-    const altitude = focusPos && Number.isFinite(focusPos.y) ? Math.max(0, focusPos.y) : 0;
+    // (altitude above the ground under the camera: the streets themselves climb to 280 m)
+    const altitude = focusPos && Number.isFinite(focusPos.y) ? Math.max(0, focusPos.y - heightAt(focusPos.x, focusPos.z)) : 0;
     this.sunLight.shadow.camera.far = Math.max(300, Math.min(720, 260 + altitude * 1.6));
   }
 }

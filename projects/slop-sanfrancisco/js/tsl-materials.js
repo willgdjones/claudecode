@@ -56,14 +56,7 @@ import {
   specularColorBlended,
   specularF90
 } from 'three/tsl';
-import {
-  CENTRAL_PARK_BOUNDS,
-  ISLAND_BOUNDS,
-  getIslandBoundsAtZ,
-  NJ_SHORELINE_POLYGON,
-  LONG_ISLAND_POLYGONS,
-  streetZ
-} from './city-config.js';
+import { SEA_LEVEL, groundHeightNode } from './terrain.js';
 
 // js/tsl-materials.js
 // Photorealistic TSL (Three.js Shading Language) procedural shaders for Three.js r186 WebGPURenderer
@@ -162,21 +155,14 @@ const filteredPulse = Fn(([x, a, b, w]) => {
 
 /**
  * Occlusion-Aware Urban Canyon Sky Visibility (aoNode)
- * Models how Manhattan street canyons occlude overhead sky irradiance near the street floor (y = 0..65m),
- * while opening up in Central Park and on upper tower shafts.
+ * Models how street canyons occlude overhead sky irradiance near the street floor (0..65 m above the local ground,
+ * read from the shader copy of the heightfield: San Francisco's streets climb 280 m up Twin Peaks).
  */
 const canyonSkyAONode = Fn(() => {
-  const wp = positionWorld;
-  // Open sky inside Central Park (city-config.js CENTRAL_PARK_BOUNDS, 5th Ave to Central Park West, 59th to 110th St)
-  const cp = CENTRAL_PARK_BOUNDS;
-  const inParkX = smoothstep(cp.minX - 10.0, cp.minX + 20.0, wp.x).mul(float(1.0).sub(smoothstep(cp.maxX - 20.0, cp.maxX + 10.0, wp.x)));
-  const inParkZ = smoothstep(cp.minZ - 10.0, cp.minZ + 30.0, wp.z).mul(float(1.0).sub(smoothstep(cp.maxZ - 30.0, cp.maxZ + 10.0, wp.z)));
-  const inPark = inParkX.mul(inParkZ);
-
-  const heightOpenness = smoothstep(0.0, 68.0, wp.y);
-  const streetCrevice = smoothstep(0.0, 7.5, wp.y).mul(0.22).add(0.78);
-  const canyonAO = mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
-  return mix(canyonAO, float(1.0), inPark);
+  const above = positionWorld.y.sub(groundHeightNode(positionWorld.xz));
+  const heightOpenness = smoothstep(0.0, 68.0, above);
+  const streetCrevice = smoothstep(0.0, 7.5, above).mul(0.22).add(0.78);
+  return mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
 });
 
 // Material caches to prevent duplicate WebGPU WGSL shader compilation across blocks & landmarks
@@ -205,7 +191,7 @@ const facadeAlongZ = varying(
  *   a lit room's tint), drapes at their mean coverage & lamps fade out, so distant towers don't twinkle in motion.
  * - Returns `vec4(roomColor, litEmit)`.
  */
-const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, floorHNode, seedNode, warmthNode, litProbNode, fwNode]) => {
+const makeApartmentInterior = (wallMode) => Fn(([uCoord, vCoord, winUV, cellId, winWNode, floorHNode, seedNode, warmthNode, litProbNode, fwNode]) => {
   const u = float(uCoord).toVar();
   const v = float(vCoord).toVar();
   const wUV = vec2(winUV).toVar();
@@ -240,7 +226,8 @@ const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, 
   // View ray `dir` in world meters in the room's (across, up, depth) frame. `across` runs along the wall's tangent
   // (+x on walls facing ±z, +z on walls facing ±x, turning with walls that follow a non-grid street)
   const rayWorld = normalize(positionWorld.sub(cameraPosition)).toVar();
-  const tSign = mix(sign(facadeWorldNormal.z).negate(), sign(facadeWorldNormal.x), facadeAlongZ);
+  // (wall-local facades: u runs along the wall's own direction, which is exactly that tangent)
+  const tSign = wallMode ? float(1.0) : mix(sign(facadeWorldNormal.z).negate(), sign(facadeWorldNormal.x), facadeAlongZ);
   const dirX = dot(rayWorld, vec3(facadeWorldNormal.z.negate(), 0.0, facadeWorldNormal.x).mul(tSign)).toVar();
   const dirY = rayWorld.y.toVar();
   const dirZ = max(abs(dot(rayWorld, facadeWorldNormal)), 0.05).toVar();
@@ -360,6 +347,8 @@ const evaluateApartmentInterior = Fn(([uCoord, vCoord, winUV, cellId, winWNode, 
 
   return vec4(finalRoomCol, mix(litRoom, litProbNode, lod).mul(bestEmit));
 });
+const evaluateApartmentInterior = makeApartmentInterior(false);
+const evaluateApartmentInteriorWall = makeApartmentInterior(true);
 
 /**
  * Treatment of each wall of a box-local facade box (createFacadeBoxes `faces`, read by facadeCell). shop: street front
@@ -384,6 +373,12 @@ const WALL_KINDS = { shop: 0, entry: 1, rear: 2, lotLine: 3, blankStone: 4 };
  * Plain JS (not Fn) so it inlines into each node graph exactly like hand-written code.
  */
 function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0) {
+  // 'wall': extruded footprints (js/buildings.js) carry their own wall frame per vertex — `wall` = (metres along the
+  // wall from its first corner, metres above the building's base, wall width, wall height) and `wallInfo` = (WALL_KIND,
+  // seed + tone fraction, per-wall bay offset, -) — so windows line up storey by storey on any slope and any angle
+  const wallMode = boxLocal === 'wall';
+  // 'boxbase': box-local, but storeys count up from each box's own bottom (boxes standing on hillsides)
+  const boxBase = boxLocal === 'boxbase';
   // Box-local walls are told apart by the box's own normals (createFacadeBoxes instances may be turned about +y to
   // follow a non-grid street); world-space walls by the world normal
   const nWall = boxLocal ? normalGeometry : facadeWorldNormal;
@@ -406,7 +401,36 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0) {
   let fromTop = float(0.0);
   let boxSeed = float(0.0);
 
-  if (boxLocal) {
+  if (wallMode) {
+    const wl = attribute('wall', 'vec4');
+    const info = attribute('wallInfo', 'vec4');
+    kind = info.x;
+    tone = fract(info.y).sub(0.1).div(0.8);
+    boxSeed = floor(info.y);
+    const wallSeed = floor(info.y.add(info.z));
+    const wallWidth = max(wl.z, 0.01);
+    const along = wl.x.div(wallWidth);
+    wallW = wallWidth;
+    wallS = wallWidth.sub(wl.x); // reading left to right for someone facing the wall
+    wallH = wl.w;
+    fromTop = wl.w.sub(wl.y);
+    if (cornerPier > 0) {
+      const pier = min(float(cornerPier), wallWidth.mul(0.2));
+      const inner = wallWidth.sub(pier.mul(2.0));
+      bays = max(floor(inner.div(windowWidth).add(0.5)), 1.0);
+      const s = wl.x;
+      bayWidth = inner.div(bays);
+      bayIdx = floor(s.sub(pier).div(bayWidth));
+      gridU = s.sub(pier).div(bayWidth).add(wallSeed);
+      inPier = float(1.0).sub(step(pier, s).mul(step(s, wallWidth.sub(pier))));
+    } else {
+      bays = max(floor(wallWidth.div(windowWidth).add(0.5)), 1.0);
+      bayWidth = wallWidth.div(bays);
+      bayIdx = floor(along.mul(bays));
+      gridU = along.mul(bays).add(wallSeed);
+    }
+    uCoord = gridU.mul(bayWidth);
+  } else if (boxLocal) {
     const box = attribute('box', 'vec4'); // width, height, depth, seed (+ the building's tone in its fraction)
     const faces = attribute('faces', 'vec4'); // WALL_KINDS of the -x, +x, -z & +z walls
     const wallWidth = mix(box.x, box.z, alongZ);
@@ -446,7 +470,7 @@ function facadeCell(windowWidth, floorHeight, boxLocal, cornerPier = 0) {
     uCoord = gridU.mul(bayWidth);
   }
 
-  const vCoord = positionWorld.y;
+  const vCoord = wallMode ? attribute('wall', 'vec4').y : boxBase ? positionGeometry.y.add(0.5).mul(attribute('box', 'vec4').y) : positionWorld.y;
   const gridV = vCoord.div(floorHeight);
   const cellId = vec2(floor(gridU), floor(gridV));
   const cellUV = vec2(fract(gridU), fract(gridV));
@@ -538,7 +562,7 @@ function createCurtainWallMaterial(opts = {}) {
     vec2(0.0),
     vec2(1.0)
   );
-  const aptRoom = evaluateApartmentInterior(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.65), fw);
+  const aptRoom = (boxLocal === 'wall' ? evaluateApartmentInteriorWall : evaluateApartmentInterior)(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.65), fw);
   const shopLit = step(0.24, hash2D(cellId.add(vec2(uSeed, 19.4))));
   const floorIdx = floor(gridV);
   const isMechFloor = float(1.0).sub(step(1.0, mod(floorIdx.add(uSeed), 16.0))).mul(step(4.0, floorIdx));
@@ -697,10 +721,13 @@ function createPreWarBuildingMaterial(opts = {}) {
     crownGlowColor = 0xffe0a3,
     seed = 42.0,
     boxLocal = false,
-    cornerPier = 1.2 // solid masonry at both ends of every wall above the shopfronts (box-local mode)
+    cornerPier = 1.2, // solid masonry at both ends of every wall above the shopfronts (box-local mode)
+    // Per-vertex (or per-instance) wall colour & bay layout instead of uniforms: `paint` = (linear rgb, storey height),
+    // `wallInfo`.w = window bay width. One material then serves every painted / stucco / masonry building in the city.
+    perVertex = false
   } = opts;
 
-  const cacheKey = `${stoneColor}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${cornerPier}`;
+  const cacheKey = `${stoneColor}_${trimColor}_${windowWidth}_${floorHeight}_${litProbability}_${warmth}_${crownGlowHeight}_${seed}_${boxLocal}_${cornerPier}_${perVertex}`;
   if (_preWarCache.has(cacheKey)) {
     return _preWarCache.get(cacheKey);
   }
@@ -711,12 +738,13 @@ function createPreWarBuildingMaterial(opts = {}) {
   });
 
   // The style's parameters are uniforms (not baked-in constants), so every masonry style compiles to one shader
-  const cStone = uniform(new THREE.Color(stoneColor));
+  const paintAttr = perVertex ? attribute('paint', 'vec4') : null;
+  const cStone = perVertex ? paintAttr.xyz : uniform(new THREE.Color(stoneColor));
   const cTrim = uniform(new THREE.Color(trimColor));
   const cGlass = uniform(new THREE.Color(windowGlassColor));
   const cCrown = uniform(new THREE.Color(crownGlowColor));
-  const uWindowWidth = uniform(windowWidth);
-  const uFloorHeight = uniform(floorHeight);
+  const uWindowWidth = perVertex ? attribute('wallInfo', 'vec4').w : uniform(windowWidth);
+  const uFloorHeight = perVertex ? paintAttr.w : uniform(floorHeight);
   const uLitProbability = uniform(litProbability);
   const uWarmth = uniform(warmth);
   const uCrownGlowHeight = uniform(crownGlowHeight);
@@ -749,7 +777,7 @@ function createPreWarBuildingMaterial(opts = {}) {
     vec2(0.0),
     vec2(1.0)
   );
-  const aptRoom = evaluateApartmentInterior(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.62), fw);
+  const aptRoom = (boxLocal === 'wall' ? evaluateApartmentInteriorWall : evaluateApartmentInterior)(uCoord, vCoord, winUV, cellId, bayWidth, uFloorHeight, uSeed, uWarmth, uLitProbability.mul(0.62), fw);
   const shopLit = step(0.24, hash2D(cellId.add(vec2(uSeed, 19.4))));
   const bulbCol = mix(cCoolWindow, cWarmWindow, step(float(1.0).sub(uWarmth), hash2D(cellId.add(vec2(uSeed.mul(1.9), 83.1)))));
   // Window AC units (~12% of upper-floor windows), none in the floor the band course covers
@@ -2458,7 +2486,7 @@ function createWaterMaterial() {
   });
 
   const waveTex = getWaterWaveTexture();
-  const harbourY = ISLAND_BOUNDS ? ISLAND_BOUNDS.waterLevel : -2.2;
+  const harbourY = SEA_LEVEL; // lakes & ponds lie metres above the Bay (Lake Merced 5.6 m, Stow Lake 87 m)
   const pond = smoothstep(harbourY + 1.0, harbourY + 2.0, positionWorld.y);
 
   // [tile size (m), rotation (rad), RMS slope]: incommensurate scales & angles so no pattern repeats
@@ -2522,65 +2550,10 @@ function createWaterMaterial() {
     return mix(body, lake, pond).mul(crestTint);
   })();
 
-  // Night: the lit city seen along the reflected ray. Manhattan is a stack of boxes roughly inscribed in its shoreline;
-  // across the rivers stand the NJ & Queens / Brooklyn waterfronts, and around the park lakes Central Park's rim.
-  // Each is a row of lots with varied heights, lit windows, storefronts & riverside lamps, box-filtered by the unresolved
-  // wave slopes (vertically) & the foreshortened lateral slopes (horizontally), so distant lights smear into streaks.
-  // The boxes & shorelines come from the real geography (city-config.js): [minX, minZ, maxX, maxZ] slabs inscribed in
-  // the island ~1.1 km apart, the NJ shore west of it & the Brooklyn / Queens shore east of it every 900 m of z
-
-  const IB = ISLAND_BOUNDS;
-  const MANHATTAN_BOXES = [];
-  for (let z0 = IB.minZ; z0 < IB.maxZ - 1; z0 += 1140) {
-    const z1 = Math.min(IB.maxZ, z0 + 1140);
-    let x0 = -Infinity, x1 = Infinity;
-    for (let z = z0; z <= z1 + 0.1; z += (z1 - z0) / 8) {
-      const s = getIslandBoundsAtZ(z);
-      x0 = Math.max(x0, s.westX + 40);
-      x1 = Math.min(x1, s.eastX - 40);
-    }
-    if (x1 - x0 > 100) MANHATTAN_BOXES.push([Math.round(x0), Math.round(z0), Math.round(x1), Math.round(z1)]);
-  }
-  const crossings = (polys, z) => {
-    const xs = [];
-    for (const poly of polys) {
-      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-        const a = poly[i], b = poly[j];
-        if ((a.z > z) !== (b.z > z)) xs.push(a.x + ((z - a.z) * (b.x - a.x)) / (b.z - a.z));
-      }
-    }
-    return xs;
-  };
-  const westShore = [], eastShore = [];
-  for (let z = IB.minZ - 900; z <= IB.maxZ + 900; z += 900) {
-    const s = getIslandBoundsAtZ(Math.max(IB.minZ, Math.min(IB.maxZ, z)));
-    const w = crossings([NJ_SHORELINE_POLYGON], z).filter((x) => x < s.westX - 150);
-    const e = crossings(LONG_ISLAND_POLYGONS || [], z).filter((x) => x > s.eastX + 100);
-    westShore.push([z, w.length ? Math.max(...w) : s.westX - 1300]);
-    eastShore.push([z, e.length ? Math.min(...e) : s.eastX + 900]);
-  }
-  // A shoreline x(z) through its control points, linear from one to the next. Built as a balanced sum of independent
-  // per-segment terms: a 17-deep chain of nested mix() nodes takes TSL's node build exponentially long (getNodeType
-  // recurses unmemoized into every path) and stalls the page
-  const shoreAt = (pts, z) => {
-    let terms = [];
-    for (let i = 1; i < pts.length; i++) {
-      const [za, xa] = pts[i - 1];
-      const [zb, xb] = pts[i];
-      const t = clamp(z.sub(za).div(zb - za), 0.0, 1.0);
-      const before = float(1.0).sub(step(zb, z));
-      const inSeg = i === 1 ? before : i === pts.length - 1 ? step(za, z) : step(za, z).mul(before);
-      terms.push(inSeg.mul(mix(float(xa), float(xb), t)));
-    }
-    while (terms.length > 1) {
-      const next = [];
-      for (let i = 0; i < terms.length; i += 2) next.push(i + 1 < terms.length ? terms[i].add(terms[i + 1]) : terms[i]);
-      terms = next;
-    }
-    return terms[0];
-  };
-  const CPB = CENTRAL_PARK_BOUNDS;
-  const zSt = (n) => streetZ(n);
+  // Night: the lit city seen along the reflected ray. Across the Bay the shores stand ~0.5-3 km off, the city's own
+  // waterfront rises behind the piers; the skyline is tallest towards the Financial District (FiDi ≈ x 900, z -500).
+  // Rows of lots with varied heights, lit windows, storefronts & waterfront lamps, box-filtered by the unresolved wave
+  // slopes (vertically) & the foreshortened lateral slopes (horizontally), so distant lights smear into streaks.
   mat.emissiveNode = Fn(() => {
     const night = smoothstep(0.55, 1.35, cityUniforms.uInteriorGlow);
     const P = positionWorld.xz;
@@ -2588,70 +2561,44 @@ function createWaterMaterial() {
     const horiz = max(length(R.xz), 0.001);
     const dir = R.xz.div(horiz);
     const tanEl = R.y.div(horiz);
-    const sgn = vec2(mix(float(-1.0), float(1.0), step(0.0, dir.x)), mix(float(-1.0), float(1.0), step(0.0, dir.y)));
-    const inv = sgn.div(max(abs(dir), vec2(0.0001))).toVar();
-
-    // Nearest Manhattan face entered from outside
-    const tIsland = float(1e5).toVar();
-    for (const [x0, z0, x1, z1] of MANHATTAN_BOXES) {
-      const ta = vec2(x0, z0).sub(P).mul(inv);
-      const tb = vec2(x1, z1).sub(P).mul(inv);
-      const tn = max(min(ta.x, tb.x), min(ta.y, tb.y));
-      const tf = min(max(ta.x, tb.x), max(ta.y, tb.y));
-      tIsland.assign(min(tIsland, mix(float(1e5), tn, step(0.0, tn).mul(step(tn, tf)))));
-    }
-    // Across the rivers: the New Jersey waterfront to the west, Queens & Brooklyn to the east
-    const xWest = shoreAt(westShore, P.y).toVar();
-    const xEast = shoreAt(eastShore, P.y).toVar();
-    const tShoreRaw = mix(xWest, xEast, step(0.0, dir.x)).sub(P.x).mul(inv.x).toVar();
-    const tShore = mix(float(8000.0), clamp(tShoreRaw, 60.0, 8000.0), step(0.0, tShoreRaw)).toVar();
-    const onIsland = step(tIsland, tShore);
-    // Park lakes: the walls of buildings around Central Park's rectangle, seen from inside it
-    const ca = vec2(CPB.minX, CPB.minZ).sub(P).mul(inv);
-    const cb = vec2(CPB.maxX, CPB.maxZ).sub(P).mul(inv);
-    const tPark = clamp(min(max(ca.x, cb.x), max(ca.y, cb.y)), 60.0, 4200.0);
     const lake = step(0.5, pond);
 
-    const tHit = mix(min(tIsland, tShore), tPark, lake).toVar();
-    const hit = P.add(dir.mul(tHit)).toVar();
-    const hRefl = tHit.mul(tanEl); // height up the facades that this reflection sees
-    const u = hit.x.add(hit.y); // runs along whichever face was hit
+    // Distance to the lit shore along the ray: the city when looking back at it (towards the city centre), the far
+    // shores otherwise; lakes see their rim of trees & houses
+    const toCity = normalize(vec2(-1800.0, 1500.0).sub(P));
+    const facingCity = smoothstep(-0.2, 0.6, dot(dir, toCity));
+    const tShore = mix(mix(float(2600.0), float(520.0), facingCity), float(140.0), lake).toVar();
+    const hit = P.add(dir.mul(tShore)).toVar();
+    const hRefl = tShore.mul(tanEl);
+    const u = hit.x.add(hit.y);
 
-    // Skyline heights: Midtown (60th to 28th St) & the Financial District (south of Chambers St) stand tallest
-    const midtown = smoothstep(zSt(80), zSt(60), hit.y).mul(float(1.0).sub(smoothstep(zSt(28), zSt(14), hit.y)));
-    const manhattanS = mix(float(70.0), float(215.0), max(midtown, smoothstep(4400.0, 4950.0, hit.y)));
-    // Across the rivers: the Jersey City towers (Newport to Exchange Place) & Long Island City (opposite 60th-26th St)
-    const jerseyCity = smoothstep(3300.0, 3900.0, hit.y).mul(float(1.0).sub(smoothstep(6100.0, 6500.0, hit.y))).mul(step(hit.x, 0.0));
-    const lic = smoothstep(zSt(62), zSt(57), hit.y).mul(float(1.0).sub(smoothstep(zSt(30), zSt(25), hit.y))).mul(step(0.0, hit.x));
-    const S = mix(mix(mix(float(30.0), float(120.0), max(jerseyCity, lic)), manhattanS, onIsland), float(120.0), lake);
-    const brightness = mix(mix(float(0.6), float(1.0), onIsland), float(0.8), lake);
+    const fidi = float(1.0).sub(smoothstep(500.0, 1800.0, length(hit.sub(vec2(900.0, -500.0)))));
+    const S = mix(mix(float(28.0), float(190.0), fidi.mul(facingCity)), float(18.0), lake);
+    const brightness = mix(mix(float(0.55), float(1.0), facingCity), float(0.7), lake);
 
-    // Footprint on the facades (m): unresolved slopes tilt the reflection ±2σ, laterally foreshortened at grazing views
     const sigma2 = sqrt(variance).mul(2.0);
-    const sV = tHit.mul(sigma2).add(fwidth(hRefl)).add(0.5);
-    const sU = tHit.mul(sigma2).mul(max(viewDir.y, 0.05)).add(fwidth(u)).add(0.3);
+    const sV = tShore.mul(sigma2).add(fwidth(hRefl)).add(0.5);
+    const sU = tShore.mul(sigma2).mul(max(viewDir.y, 0.05)).add(fwidth(u)).add(0.3);
 
-    // Lots 24 m wide with heights 0.3–1.3× the district skyline (averaged once a footprint spans several lots)
-    const lot = floor(u.div(24.0));
+    const lot = floor(u.div(20.0));
     const r1 = hash2D(vec2(lot, 5.1));
     const r2 = hash2D(vec2(lot, 9.7));
     const r3 = hash2D(vec2(lot, 13.3));
     const lotMix = smoothstep(5.0, 20.0, sU);
-    const upper = mix(waterBoxCover(hRefl, 4.5, S.mul(r1.mul(r1).add(0.3)), sV), waterBoxCover(hRefl, 4.5, S.mul(0.63), sV), lotMix);
-    const ground = waterBoxCover(hRefl, 0.0, 4.5, sV);
+    const upper = mix(waterBoxCover(hRefl, 4.0, S.mul(r1.mul(r1).add(0.3)), sV), waterBoxCover(hRefl, 4.0, S.mul(0.63), sV), lotMix);
+    const ground = waterBoxCover(hRefl, 0.0, 4.0, sV);
 
-    // Lit windows (3.2 m bays × 3.6 m floors), resolving to each lot's mean occupancy, then the street's
     const dens = mix(float(0.2), float(0.6), r2);
-    const bayF = u.div(3.2);
-    const floorF = hRefl.div(3.6);
+    const bayF = u.div(3.0);
+    const floorF = hRefl.div(3.3);
     const litWin = step(hash2D(floor(vec2(bayF, floorF)).add(lot.mul(0.731))), dens);
-    const pane = filteredPulse(fract(bayF), 0.16, 0.84, sU.div(3.2)).mul(filteredPulse(fract(floorF), 0.3, 0.88, sV.div(3.6)));
-    const winDetail = float(1.0).sub(smoothstep(0.7, 1.8, max(sU.div(3.2), sV.div(3.6))));
+    const pane = filteredPulse(fract(bayF), 0.16, 0.84, sU.div(3.0)).mul(filteredPulse(fract(floorF), 0.3, 0.88, sV.div(3.3)));
+    const winDetail = float(1.0).sub(smoothstep(0.7, 1.8, max(sU.div(3.0), sV.div(3.3))));
     const windows = mix(mix(dens.mul(0.394), litWin.mul(pane), winDetail), float(0.4 * 0.394), lotMix);
     const tint = mix(mix(color(0xffc58a), color(0xdde6ff), step(0.62, r3)), color(0xf6d3aa), lotMix);
     const shopLit = mix(mix(float(0.1), float(1.0), step(0.35, r3)), float(0.7), lotMix);
 
-    // Riverside promenade / highway lamps every 30 m, heads at ~8.5 m
+    // Embarcadero & waterfront lamps every 30 m, heads at ~8.5 m
     const lampDist = abs(fract(u.div(30.0)).sub(0.5)).mul(30.0);
     const lampU = mix(waterBoxCover(lampDist, -0.45, 0.45, sU), float(0.9 / 30.0), smoothstep(5.0, 14.0, sU));
     const lamps = lampU.mul(waterBoxCover(hRefl, 8.2, 8.8, sV)).mul(70.0);
@@ -2659,11 +2606,8 @@ function createWaterMaterial() {
     const city = tint.mul(windows.mul(upper).mul(0.95))
       .add(color(0xffcf9a).mul(ground.mul(shopLit).mul(0.4)))
       .add(color(0xffd9b0).mul(lamps));
-    const treeline = mix(float(1.0), smoothstep(0.2, 0.42, tanEl), lake); // lake shores: only towers above the trees
-    // The analytic skyline only models the rivers along the detailed island: fade it out up the Hudson & Harlem River
-    // and down the Upper Bay, where its shorelines no longer match the boroughs
-    const region = smoothstep(IB.minZ - 400.0, IB.minZ - 100.0, P.y).mul(float(1.0).sub(smoothstep(IB.maxZ + 200.0, IB.maxZ + 600.0, P.y)));
-    return city.mul(brightness).mul(treeline).mul(fresnel).mul(night).mul(region);
+    const treeline = mix(float(1.0), smoothstep(0.2, 0.42, tanEl), lake);
+    return city.mul(brightness).mul(treeline).mul(fresnel).mul(night);
   })();
 
   return mat;
@@ -2713,6 +2657,46 @@ function createParkLawnMaterial(isMeadow = false) {
     specularF90.assign(0.3);
   };
 
+  return mat;
+}
+
+/**
+ * San Francisco ground: one material for the whole graded heightfield (js/ground.js). Its `ground` vertex attribute
+ * weighs the surfaces of each 4 m cell — x roadway, y park, z beach sand, w private lot (the rest is open public
+ * ground: plazas, waterfront, sidewalk margins) — blending the roadway asphalt (puddles, manholes), the park lawn,
+ * sidewalk concrete, sand and bare lot ground; steep unpaved slopes (Twin Peaks, Lands End, Bernal) turn to scrub & rock.
+ */
+function createTerrainMaterial() {
+  const road = createRoadSurfaceMaterial();
+  const lawn = createParkLawnMaterial(true);
+  const walk = createSidewalkMaterial();
+  const mat = new THREE.MeshStandardNodeMaterial({ metalness: 0.0, roughness: 0.9 });
+  const gw = attribute('ground', 'vec4');
+  const wRoad = gw.x, wPark = gw.y, wSand = gw.z, wLot = gw.w;
+  const wOpen = clamp(float(1.0).sub(wRoad).sub(wPark).sub(wSand).sub(wLot), 0.0, 1.0);
+  const steep = smoothstep(0.22, 0.5, float(1.0).sub(normalWorldGeometry.y)).mul(float(1.0).sub(wRoad));
+
+  mat.aoNode = canyonSkyAONode();
+
+  mat.colorNode = Fn(() => {
+    const xz = positionWorld.xz;
+    const n1 = noise2D(xz.mul(0.07));
+    const n2 = noise2D(xz.mul(0.9));
+    const sand = mix(color(0xb9a582), color(0xd2c19c), n1.mul(0.6).add(n2.mul(0.4)));
+    const dirt = mix(color(0x5d5243), color(0x7a6b55), n1).mul(n2.mul(0.2).add(0.9));
+    const scrub = mix(color(0x55613a), color(0x7c7650), n1).mul(n2.mul(0.25).add(0.85));
+    const rock = mix(color(0x6b665c), color(0x8c857a), n2);
+    const base = road.colorNode.mul(wRoad)
+      .add(lawn.colorNode.mul(wPark))
+      .add(sand.mul(wSand))
+      .add(dirt.mul(wLot))
+      .add(walk.colorNode.mul(wOpen));
+    return mix(base, mix(scrub, rock, smoothstep(0.45, 0.7, float(1.0).sub(normalWorldGeometry.y))), steep);
+  })();
+
+  mat.roughnessNode = road.roughnessNode.mul(wRoad).add(float(0.93).mul(float(1.0).sub(wRoad)));
+  mat.metalnessNode = road.metalnessNode.mul(wRoad);
+  mat.normalNode = Fn(() => normalize(mix(normalView, road.normalNode, wRoad.mul(float(1.0).sub(steep)))))();
   return mat;
 }
 
@@ -3010,6 +2994,14 @@ function createCarFlareMaterial() {
 
 export {
   cityUniforms,
+  createTerrainMaterial,
+  canyonSkyAONode,
+  hash2D,
+  noise2D,
+  bumpNormal,
+  filteredPulse,
+  facadeCell,
+  evaluateApartmentInterior,
   WALL_KINDS,
   createCurtainWallMaterial,
   createPreWarBuildingMaterial,

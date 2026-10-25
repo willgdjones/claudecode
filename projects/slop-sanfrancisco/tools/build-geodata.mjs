@@ -93,7 +93,13 @@ plan.R.d = null; plan.C = null; plan.P = null; plan.lab = null;
 
 // --- 4. Buildings -------------------------------------------------------------------------------------------------------
 const TILE = 500;
-const buildings = loadBuildings();
+const buildings = loadBuildings().filter((b) => {
+  // Sutro Tower's splayed legs come through as 180-210 m solid prisms: the only 90 m+ structure outside downtown.
+  // It is a bespoke landmark model instead (js/landmarks.js)
+  const antenna = b.roof - b.gnd > 90 && b.cx < -2000;
+  if (antenna) log(`set aside antenna footprint at ${b.cx.toFixed(0)}, ${b.cz.toFixed(0)} (${(b.roof - b.gnd).toFixed(0)} m)`);
+  return !antenna;
+});
 const styleCount = new Array(7).fill(0);
 for (const b of buildings) {
   let base = Infinity;
