@@ -19,24 +19,34 @@ function eventTarget() {
   };
 }
 
-function keyboardHarness(nyc = {}) {
+// Flat, dry, all-roadway defaults: each test overrides only the part of the city it exercises.
+function keyboardHarness(city = {}, terrain = {}) {
   const window = eventTarget();
   const document = { ...eventTarget(), hidden: false };
   const config = {
-    streetZ: () => 0,
+    ISLAND_BOUNDS: { minX: -500, maxX: 500, minZ: -500, maxZ: 500, sidewalkHeight: 0.22 },
+    SPAWN: { x: 0, z: 0, heading: 0 },
+    onRoadway: () => true,
     isTypingInField: (event) => ['INPUT', 'SELECT'].includes(event.target?.tagName),
-    ...nyc
+    ...city
+  };
+  const ground = {
+    heightAt: () => 0,
+    isWater: () => false,
+    waterLevelAt: () => 0,
+    gradeAlong: () => 0,
+    ...terrain
   };
   const { ThirdPersonControllerManager } = loadModule(source, {
     globals: { window, document },
     imports: {
       'three/webgpu': {},
       './city-config.js': config,
+      './terrain.js': ground,
       './tsl-materials.js': {},
       './actor-models.js': {},
       './pedestrians.js': {},
-      './vehicle-lights.js': {},
-      './landmarks.js': {}
+      './vehicle-lights.js': {}
     }
   });
   // Exercise the production event handlers without constructing the scene's 3D models.
@@ -151,8 +161,7 @@ for (const interruption of ['blur', 'hidden', 'reset']) {
   });
 }
 
-function advanceWithTouch(mode, strength, reverse) {
-  const { controller } = keyboardHarness();
+function drivingEntity(mode) {
   const entity = { position: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0 };
   if (mode === 'Person') Object.assign(entity, { verticalVel: 0 });
   if (mode === 'Car') Object.assign(entity, {
@@ -168,7 +177,14 @@ function advanceWithTouch(mode, strength, reverse) {
     verticalSpeed: 0, pitchAngle: 0, rollAngle: 0,
     tiltPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }
   });
+  return entity;
+}
+
+function advanceWithTouch(mode, strength, reverse) {
+  const { controller } = keyboardHarness();
+  const entity = drivingEntity(mode);
   controller.entities = { [mode.toLowerCase()]: entity };
+  controller.activeMode = mode.toLowerCase();
   controller.getGroundHeight = () => 0;
   controller.resolveHorizontalCollision = () => {};
   controller.setTouchInput(reverse ? 'backward' : 'forward', strength);
@@ -193,13 +209,8 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
   });
 }
 
-function teleportHarness(mode, colliders = [], shore = () => ({ westX: -500, eastX: 500 })) {
-  const harness = keyboardHarness({
-    ISLAND_BOUNDS: { minX: -500, maxX: 500, minZ: -500, maxZ: 500, sidewalkHeight: 0.22 },
-    CENTRAL_PARK_BOUNDS: { minX: 1000, maxX: 1100, minZ: 1000, maxZ: 1100 },
-    getIslandBoundsAtZ: shore,
-    blockAt: () => null
-  });
+function teleportHarness(mode, colliders = [], isWater = () => false) {
+  const harness = keyboardHarness({}, { isWater });
   const { controller } = harness;
   const position = (x = 0, y = 0, z = 0) => ({ x, y, z, copy(p) { this.x = p.x; this.y = p.y; this.z = p.z; } });
   const pivot = () => ({ position: position(), rotation: { x: 0.1, y: 0, z: -0.2 } });
@@ -404,17 +415,110 @@ test('helicopter skids cannot pass through a roof below the body origin', () => 
 });
 
 test('ground arrivals share movement shoreline limits while helicopters may remain above lower buildings', () => {
-  const shore = z => ({ westX: -40 + z * 0.05, eastX: 40 + z * 0.05 });
-  const { controller, ent } = teleportHarness('person', [], shore);
-  const result = controller.teleportActiveTo(1000, -1000);
-  assert.deepEqual({ ...result }, { x: 8.5, z: -470 });
-  controller.resolveHorizontalCollision(ent.position, 0.48);
-  assert.deepEqual([ent.position.x, ent.position.z], [result.x, result.z]);
+  // A slanted shoreline: water west of x = -40 + z/20 and east of x = 40 + z/20 (San Francisco is mostly coast).
+  const water = (x, z) => x < -40 + z * 0.05 || x > 40 + z * 0.05;
+  for (const mode of ['person', 'car', 'cyclist']) {
+    const { controller, ent } = teleportHarness(mode, [], water);
+    const result = controller.teleportActiveTo(60, -100);
+    assert.equal(water(result.x, result.z), false, `${mode} arrives on dry land`);
+    assert.ok(Math.hypot(result.x - 60, result.z + 100) < 40, `${mode} arrives at the nearest shore`);
+    const before = [ent.position.x, ent.position.z];
+    controller.resolveHorizontalCollision(ent.position, 0.48, mode === 'car' ? ent : null);
+    assert.deepEqual([ent.position.x, ent.position.z], before, 'movement accepts the arrival');
+  }
+  const over = teleportHarness('helicopter', [], water);
+  assert.deepEqual({ ...over.controller.teleportActiveTo(60, -100) }, { x: 60, z: -100 }, 'helicopters may hover over the Bay');
 
   const heli = teleportHarness('helicopter', [{ minX: -30, maxX: 30, minZ: -30, maxZ: 30, maxY: 50 }]);
   heli.ent.position.y = 10;
   assert.deepEqual({ ...heli.controller.teleportActiveTo(0, 0) }, { x: 0, z: 0 });
   assert.equal(heli.ent.position.y, 92);
+});
+
+test('ground movement stops at the water line', () => {
+  const water = (x) => x > 20;
+  const { controller, ent } = teleportHarness('car', [], water);
+  Object.assign(ent.position, { x: 19, z: 0 });
+  controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  ent.speed = 10;
+  ent.position.x = 21;
+  controller.resolveHorizontalCollision(ent.position, 1.35, ent);
+  assert.deepEqual([ent.position.x, ent.position.z], [19, 0], 'the car is held at its last dry position');
+  assert.ok(ent.speed < 0, 'and bounces back off the seawall');
+});
+
+test('teleports and movement respect real polygon building footprints', () => {
+  // An L-shaped footprint (counter-clockwise in x/z), as buildings.js colliders carry it.
+  const poly = [0, 0, 20, 0, 20, 8, 8, 8, 8, 20, 0, 20];
+  const collider = { minX: 0, maxX: 20, minZ: 0, maxZ: 20, maxY: 40, poly };
+  for (const mode of ['person', 'car', 'cyclist']) {
+    const { controller, ent } = teleportHarness(mode, [{ ...collider, poly: poly.slice() }]);
+    assert.deepEqual({ ...controller.teleportActiveTo(15, 15, 0) }, { x: 15, z: 15 }, `${mode}: the inner corner of the L is open`);
+    const inside = controller.teleportActiveTo(4, 4, 0);
+    assert.notDeepEqual({ ...inside }, { x: 4, z: 4 });
+    const before = [ent.position.x, ent.position.z];
+    controller.resolveHorizontalCollision(ent.position, mode === 'person' ? 0.48 : mode === 'car' ? 1.35 : 0.65, mode === 'car' ? ent : null);
+    assert.deepEqual([ent.position.x, ent.position.z], before, `${mode} arrives clear of the footprint`);
+  }
+  const { controller, ent } = teleportHarness('person', [{ ...collider }]);
+  Object.assign(ent.position, { x: 10, y: 0, z: 7.8 });
+  controller.resolveHorizontalCollision(ent.position, 0.48);
+  assert.ok(Math.abs(ent.position.z - 8.48) < 1e-6 && Math.abs(ent.position.x - 10) < 1e-6, 'pushed straight out of the nearest wall');
+});
+
+// --- San Francisco hills: gravity along the street grade ------------------------------------------------------------
+// gradeAlong(x, z, dirX, dirZ) is the rise per metre in the given direction; a constant slope rising toward +z.
+function hillHarness(mode, slope) {
+  const { controller } = keyboardHarness({}, { gradeAlong: (_x, _z, _dx, dz) => slope * dz });
+  const entity = drivingEntity(mode);
+  controller.entities = { [mode.toLowerCase()]: entity };
+  controller.activeMode = mode.toLowerCase();
+  controller.getGroundHeight = (_x, z) => slope * z;
+  controller.resolveHorizontalCollision = () => {};
+  controller.reportCollision = () => {};
+  const run = (seconds) => { for (let t = 0; t < seconds; t += 1 / 60) controller[`update${mode}`](1 / 60, t); };
+  return { controller, entity, run };
+}
+
+test('a coasting car picks up speed down a steep grade and loses it climbing', () => {
+  const down = hillHarness('Car', 0.3);
+  down.entity.heading = Math.PI; // facing -z: downhill
+  down.entity.speed = 5;
+  down.run(2);
+  assert.ok(down.entity.speed > 8, `downhill coast: ${down.entity.speed}`);
+  assert.ok(down.entity.position.z < -10, 'and rolls down the street');
+
+  const up = hillHarness('Car', 0.3);
+  up.entity.speed = 10;
+  up.run(1);
+  const flat = hillHarness('Car', 0);
+  flat.entity.speed = 10;
+  flat.run(1);
+  assert.ok(up.entity.speed < flat.entity.speed - 2, `uphill coast ${up.entity.speed} vs flat ${flat.entity.speed}`);
+});
+
+test('a car at rest holds on a hill without throttle', () => {
+  const { entity, run } = hillHarness('Car', 0.315); // Filbert St
+  entity.heading = Math.PI;
+  run(2);
+  assert.equal(entity.speed, 0);
+  assert.equal(entity.position.z, 0);
+});
+
+test('a cyclist pedals more slowly up a grade and freewheels faster down it', () => {
+  const pedal = (slope, heading) => {
+    const h = hillHarness('Cyclist', slope);
+    h.entity.heading = heading;
+    h.controller.setTouchInput('forward', 1);
+    h.run(3);
+    return h.entity.speed;
+  };
+  const flat = pedal(0, 0);
+  const uphill = pedal(0.2, 0);
+  const downhill = pedal(0.2, Math.PI);
+  assert.ok(uphill < flat - 2, `uphill ${uphill} vs flat ${flat}`);
+  assert.ok(uphill > 0, 'a 20% grade is still climbable');
+  assert.ok(downhill > flat, `downhill ${downhill} vs flat ${flat}`);
 });
 
 test('a displaced pedestrian samples ground and resets its feet at the resolved destination', () => {

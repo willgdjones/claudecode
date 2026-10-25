@@ -29,7 +29,7 @@ for (const [hasView, inView, draw] of [[true, false, false], [true, true, true],
   });
 }
 
-function sparkHarness(updates = 3) {
+function sparkHarness(updates = 3, heightAt = () => 0) {
   const sparks = Array.from({ length: 120 }, () => ({ life: 0 }));
   const writes = [];
   const zero = { zero: true };
@@ -47,7 +47,7 @@ function sparkHarness(updates = 3) {
     instanceMatrix: attr,
     setMatrixAt(index, matrix) { writes.push({ index, matrix: JSON.parse(JSON.stringify(matrix)) }); }
   };
-  const context = { MAX_SPARKS: 120, sparks, sparkInst, dummy, zero, updates };
+  const context = { MAX_SPARKS: 120, sparks, sparkInst, dummy, zero, updates, heightAt };
   const flag = productionFunction('flagRange', {});
   context.flagRange = flag;
   return {
@@ -107,4 +107,13 @@ test('live sparks preserve motion, bounce and fade while packing only live matri
   assert.equal(h.sparkInst.count, 0);
   assert.equal(h.sparkInst.visible, false);
   assert.equal(h.uploads(), uploads);
+});
+
+test('sparks bounce off the terrain under them, not a flat street level', () => {
+  const h = sparkHarness(3, (x) => 40 + x * 0.25); // a hillside street
+  h.sparks[5] = { x: 4, y: 41.05, z: 0, vx: 0, vy: -2, vz: 0, life: 0.3, maxLife: 0.4 };
+  h.update(0.05);
+  const spark = h.sparks[5];
+  assert.ok(Math.abs(spark.y - (40 + 4 * 0.25 + 0.03)) < 1e-12, 'clamped to the slope just above the ground');
+  assert.ok(spark.vy > 0, 'and bounced');
 });

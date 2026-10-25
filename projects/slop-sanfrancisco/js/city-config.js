@@ -166,10 +166,10 @@ const TELEPORT_LOCATIONS = {
   paintedladies: arrive(-122.4342, 37.7768, -122.4330, 37.7763), // Alamo Square, facing Steiner St & downtown
   twinpeaks: arrive(-122.4470, 37.7530, -122.4400, 37.7600), // Christmas Tree Point, facing downtown
   dolores: arrive(-122.4276, 37.7595, -122.4220, 37.7620), // Dolores Park, facing the skyline
-  oceanbeach: arrive(-122.5088, 37.7620, -122.5200, 37.7620), // Great Highway, facing the Pacific
+  oceanbeach: arrive(-122.5096, 37.7619, -122.5200, 37.7619), // Great Highway, facing the Pacific
   ggpark: arrive(-122.4602, 37.7712, -122.4570, 37.7712), // JFK Drive by the Conservatory of Flowers
   crissy: arrive(-122.4600, 37.8035, -122.4783, 37.8150), // Crissy Field, facing the Golden Gate Bridge
-  haight: arrive(-122.4462, 37.7702, -122.4480, 37.7695) // Haight St at Ashbury
+  haight: arrive(-122.44662, 37.77008, -122.4480, 37.7700) // Haight St at Ashbury
 };
 
 // ---------------------------------------------------------------------------------------------------------------------

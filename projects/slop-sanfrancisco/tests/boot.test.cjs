@@ -24,15 +24,31 @@ test('city module preloads start after the import map and before stylesheets', (
   assert.equal(imports.three, imports['three/webgpu'], 'Three.js aliases share one module instance');
 });
 
+// Every module in the static import graph of the entry, as the browser would resolve it.
+function moduleGraph(entry) {
+  const seen = new Set();
+  const queue = [entry];
+  while (queue.length) {
+    const src = queue.pop();
+    if (seen.has(src)) continue;
+    seen.add(src);
+    const source = readFileSync(join(__dirname, '..', src), 'utf8');
+    for (const [, specifier] of source.matchAll(/(?:\bfrom\s*|\bimport\s*)['"](\.[^'"]+)['"]/g)) {
+      queue.push('./' + join(src, '..', specifier).replace(/\\/g, '/'));
+    }
+  }
+  return seen;
+}
+
 test('native module entry and imports share canonical preloaded URLs on GitHub Pages', () => {
   const links = preloads.map((match) => match[1]);
-  assert.equal(links.length, 31);
+  assert.deepEqual([...links].sort(), [...moduleGraph('./js/main.js')].sort(), 'every module of the graph is preloaded');
   assert.equal(new Set(links).size, links.length, 'each module is preloaded once');
   assert.equal(entries.length, 1);
   assert.equal(entries[0][1], './js/main.js');
   assert.ok(links.includes(entries[0][1]));
   assert.equal([...html.matchAll(/<script\b/g)].length, 2, 'only the import map and native entry are needed');
-  const base = 'https://example.test/slop-newyork/';
+  const base = 'https://example.test/slop-sanfrancisco/';
   const urls = new Set(links.map((src) => new URL(src, base).href));
   for (const src of links) {
     assert.match(src, /^\.\/js\/[\w-]+\.js$/, 'preloads use the same unversioned paths as native imports');
@@ -41,5 +57,16 @@ test('native module entry and imports share canonical preloaded URLs on GitHub P
       const url = new URL(specifier, new URL(src, base));
       assert.ok(urls.has(url.href), `${src} imports an unpreloaded or mismatched URL: ${specifier}`);
     }
+  }
+});
+
+test('the city data files are preloaded and every one sf-data.js fetches exists', () => {
+  const geo = JSON.parse(readFileSync(join(__dirname, '../data/sf-geo.json'), 'utf8'));
+  const dataPreloads = [...html.matchAll(/<link rel="preload" href="\.\/data\/([^"]+)" as="fetch" crossorigin\s*\/>/g)].map((m) => m[1]);
+  const fetched = ['sf-geo.json', ...['terrain', 'ground', 'bay', 'buildings', 'trees'].map((k) => geo[k] && geo[k].file).filter(Boolean)];
+  assert.ok(fetched.length >= 5);
+  for (const name of fetched) {
+    assert.ok(dataPreloads.includes(name), `${name} is preloaded`);
+    assert.ok(require('node:fs').existsSync(join(__dirname, '../data', name)), `data/${name} exists`);
   }
 });

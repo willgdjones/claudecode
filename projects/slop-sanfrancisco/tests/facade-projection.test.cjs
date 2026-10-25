@@ -36,9 +36,10 @@ const frame = source.match(/const facadeNormalVertex =[\s\S]*?const facadeAlongZ
 assert.ok(frame, 'the shared camera-independent facade frame must exist');
 const projectionStart = source.indexOf('function facadeCell(');
 const projection = source.slice(source.indexOf('{', projectionStart) + 1, source.indexOf('let bayWidth', projectionStart));
-const interiorStart = source.indexOf('const rayWorld =', source.indexOf('const evaluateApartmentInterior'));
+const interiorStart = source.indexOf('const rayWorld =', source.indexOf('makeApartmentInterior'));
 const interior = source.slice(interiorStart, source.indexOf('// Slab intersection', interiorStart));
 const buildFrame = vm.runInNewContext(`(function (normalLocal, modelNormalMatrix, normalWorldGeometry, cameraViewMatrix) {
+  const wallMode = false; // the world-projected facade path (wall-local facades use their own tangent)
   ${frame[0]}
   return {
     normal: facadeWorldNormal, axis: facadeAlongZ,
@@ -48,6 +49,7 @@ const buildFrame = vm.runInNewContext(`(function (normalLocal, modelNormalMatrix
 })`, {
   THREE: { InterpolationSamplingType: { FLAT: 'flat' }, InterpolationSamplingMode: { EITHER: 'either' } },
   normalize: v => v.normalize(),
+  float: v => new Node(v),
   varying: v => new Node(v),
   abs: unary(Math.abs), sign: unary(Math.sign),
   step: (edge, v) => binary(edge, v, (a, b) => b < a ? 0 : 1),

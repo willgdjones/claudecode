@@ -43,7 +43,7 @@ function eventTarget() {
 function cameraHarness(entity = {
   position: new Vector3(0, 0, 100), heading: 0, speed: 0, type: 'car',
   chaseDistance: 6.9, chaseHeight: 2.12, cameraTargetOffset: new Vector3(0, 1, 0)
-}) {
+}, surfaceAt = () => 0) {
   const window = eventTarget();
   const document = { ...eventTarget(), hidden: false };
   const canvas = { ...eventTarget(), style: {} };
@@ -59,7 +59,12 @@ function cameraHarness(entity = {
   window.innerHeight = 900;
   const { CameraSystem } = loadModule(source, {
     globals: { window, document },
-    imports: { 'three/webgpu': { Vector3, PerspectiveCamera }, './landmarks.js': {} }
+    imports: {
+      'three/webgpu': { Vector3, PerspectiveCamera },
+      // Flat ground: these tests cover input handling and camera re-anchoring, not terrain clearance.
+      './city-config.js': { lonLatToWorld: (lon, lat) => ({ x: (lon + 122.4078) * 88000, z: -(lat - 37.7847) * 111000 }) },
+      './terrain.js': { heightAt: surfaceAt, surfaceAt }
+    }
   });
   const camera = new CameraSystem(canvas, { getActiveEntity: () => entity });
   return {
@@ -239,4 +244,20 @@ test('teleport releases every camera pointer and ignores old gestures before acc
   h.pointer(h.canvas, 'pointermove', 3, 610);
   close(h.camera.orbitYawOffset, -0.065);
   assert.equal(h.camera.isDragging, true);
+});
+
+test('the chase camera stays above a hillside that rises behind the entity', () => {
+  // A 30% grade climbing toward -z (behind a car heading +z), like a San Francisco hill seen from the bottom.
+  const slope = (x, z) => Math.max(0, -(z - 100) * 0.3);
+  const entity = {
+    position: new Vector3(0, 0, 100), heading: 0, speed: 0, type: 'car',
+    chaseDistance: 6.9, chaseHeight: 2.12, cameraTargetOffset: new Vector3(0, 1, 0)
+  };
+  const h = cameraHarness(entity, slope);
+  for (let i = 0; i < 240; i++) {
+    h.camera.update(1 / 60, i / 60);
+    const p = h.camera.currentPos;
+    assert.ok(p.y >= slope(p.x, p.z) + 0.5, `camera at y=${p.y} is inside the hill (${slope(p.x, p.z)})`);
+  }
+  assert.ok(h.camera.currentPos.z < entity.position.z, 'the camera still trails behind the entity');
 });

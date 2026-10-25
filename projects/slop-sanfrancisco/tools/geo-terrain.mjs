@@ -152,6 +152,23 @@ function toLonLat(x, z) {
   return [lon, lat];
 }
 
+// Land beyond the 1 m survey (the Marin Headlands, Daly City & Brisbane past the county line, parts of the islands) is
+// NoData in the city grid like the water: take the 1/3" DEM's height there wherever it shows land, so the city grid
+// meets the Bay ring without a cliff at its edge
+function fillFromBay(hgt, bay) {
+  const { res, x0, z0, w, h } = TERRAIN;
+  let filled = 0;
+  for (let j = 0; j < h; j++) {
+    for (let i = 0; i < w; i++) {
+      const k = j * w + i;
+      if (hgt[k] !== NODATA) continue;
+      const v = sampleGrid(bay, x0 + (i + 0.5) * res, z0 + (j + 0.5) * res);
+      if (v > 0.5) { hgt[k] = v; filled++; }
+    }
+  }
+  log(`terrain: ${filled} NoData cells (${(filled * res * res / 1e6).toFixed(2)} km²) filled with land from the 1/3" DEM`);
+}
+
 // --- Cached entry points --------------------------------------------------------------------------------------------
 export async function loadTerrain() {
   const f = `${CACHE}/terrain4.f32`, fw = `${CACHE}/water4.u8`;
@@ -168,6 +185,7 @@ export async function loadTerrain() {
     hgt = await buildCityGrid();
     fs.writeFileSync(fr, Buffer.from(hgt.buffer));
   }
+  fillFromBay(hgt, await loadBay());
   const { water, lakes } = classifyWater(hgt);
   fs.writeFileSync(f, Buffer.from(hgt.buffer));
   fs.writeFileSync(fw, water);
