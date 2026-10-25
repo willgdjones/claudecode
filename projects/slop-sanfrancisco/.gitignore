@@ -1,1 +1,4 @@
 .DS_Store
+tools/raw/
+tools/node_modules/
+tools/raw-fetch.log

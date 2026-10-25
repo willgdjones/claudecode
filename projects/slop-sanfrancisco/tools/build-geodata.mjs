@@ -1,235 +1,230 @@
-// tools/build-geodata.mjs — writes js/nyc-geodata.js (see geo-base.mjs for the frame and the data sources)
-// usage: GEO_DATA=tools/data node --max-old-space-size=8192 tools/build-geodata.mjs [out.js]
+// tools/build-geodata.mjs — builds data/ (the city the browser loads) from the raw downloads in tools/raw/.
+// usage: bash tools/fetch-data.sh && (cd tools && npm install) && node --max-old-space-size=14000 tools/build-geodata.mjs
+//
+// Outputs (world frame: see geo-frame.mjs; dm = decimetres; every .bin.gz is gzip, decoded with DecompressionStream):
+//   data/sf-geo.json      roads (+ intersection nodes), curbs, parks, neighbourhoods, lakes, landmarks, file index
+//   data/terrain.bin.gz   4 m heightfield, Uint16 (h + 20) * 25 (4 cm steps), each row delta-coded (wrapping Uint16 differences)
+//   data/ground.bin.gz    4 m ground classes, Uint8 (0 water 1 road 2 open 3 lot 4 park 5 sand)
+//   data/bay.bin.gz       32 m Bay ring heightfield, Uint16 (h + 20) * 2, rows delta-coded
+//   data/buildings.bin.gz buildings sorted by 500 m tile (record layout in writeBuildings)
+//   data/trees.bin.gz     street trees: Int16 x*2, Int16 z*2, Uint8 kind, Uint8 trunk size class
 import fs from 'node:fs';
+import path from 'node:path';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { geo, toWorld, rdp, rdpRing, ringArea, bbox, load, log, centroid } from './geo-base.mjs';
-import { pieces, STREETS, AVENUES } from './geo-streets.mjs';
-import { blocks, innerRing, roads, PLAZAS, CUT_Z, STRIP, SIDEWALK } from './geo-blocks.mjs';
-import { parkShapes, piers, bridges, nj, islands, manhattanSouth, manhattanNorth } from './geo-extra.mjs';
-import { buildRoadGraph } from './geo-roadgraph.mjs';
+import { log, loadFeatures, Raster, rdpRing, ringArea } from './geo-util.mjs';
+import { FRAME, toWorld } from './geo-frame.mjs';
+import { loadTerrain, loadBay, sampleGrid, SEA_LEVEL, TERRAIN } from './geo-terrain.mjs';
+import { segments } from './geo-streets.mjs';
+import { buildPlan, classGrid, C_ROAD, C_OPEN, C_PARCEL, C_WATER } from './geo-blocks.mjs';
+import { gradeRoads } from './geo-grade.mjs';
+import { loadBuildings, classify, STYLE } from './geo-buildings.mjs';
 
-const OUT = process.argv[2] || fileURLToPath(new URL('../js/nyc-geodata.js', import.meta.url));
-const q = (v) => Math.round(v * 10) / 10;
-const flat = (pts) => pts.flatMap(([x, z]) => [q(x), q(z)]);
-const inDetail = (z) => z > CUT_Z - 250;
-
-// --- Broadway as one ordered polyline (north to south) through the detailed island --------------------------------
-function broadwayLine() {
-  const segs = roads.filter((s) => s.name === 'BROADWAY').map((s) => (s.z0 < s.z1 ? [[s.x0, s.z0], [s.x1, s.z1]] : [[s.x1, s.z1], [s.x0, s.z0]]));
-  // Keep the carriageways' centre: bucket by z, average x of the pieces covering each 10 m of z
-  const zmin = Math.max(CUT_Z, Math.min(...segs.map((s) => s[0][1])));
-  const zmax = Math.max(...segs.map((s) => s[1][1]));
-  const line = [];
-  for (let z = zmin; z <= zmax; z += 10) {
-    const xs = [];
-    for (const [[xa, za], [xb, zb]] of segs) if (z >= za && z <= zb && zb > za) xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
-    if (!xs.length) continue;
-    // dual carriageways: midpoint of the cluster nearest the previous point
-    xs.sort((a, b) => a - b);
-    const prev = line.length ? line[line.length - 1][0] : xs[0];
-    const near = xs.filter((x) => Math.abs(x - prev) < 60);
-    const pick = near.length ? near : [xs.reduce((a, b) => (Math.abs(b - prev) < Math.abs(a - prev) ? b : a))];
-    line.push([(Math.min(...pick) + Math.max(...pick)) / 2, z]);
-  }
-  return rdp(line, 1.5);
+const OUT = process.argv[2] || fileURLToPath(new URL('../data/', import.meta.url));
+fs.mkdirSync(OUT, { recursive: true });
+const dm = (v) => Math.round(v * 10);
+const flatDm = (pts) => pts.flatMap(([x, z]) => [dm(x), dm(z)]);
+const t0 = Date.now();
+const lap = (what) => log(`${what} (${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+function writeGz(name, buf) {
+  const gz = zlib.gzipSync(Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength), { level: 9 });
+  fs.writeFileSync(path.join(OUT, name), gz);
+  log(`wrote ${name}: ${(buf.byteLength / 1e6).toFixed(2)} MB -> ${(gz.length / 1e6).toFixed(2)} MB`);
 }
-const broadway = broadwayLine();
-log(`Broadway: ${broadway.length} pts from z=${Math.round(broadway[0][1])} to ${Math.round(broadway[broadway.length - 1][1])}`);
-
-// --- Roads (at-grade centreline pieces merged into polylines per street & width), for maps & the road graph ---------
-function mergeRoads() {
-  const byKey = new Map();
-  for (const p of pieces) {
-    if (p.level !== '13' || !['1', '2'].includes(p.rw)) continue;
-    if (/DRIVEWAY|PEDESTRIAN|ALLEY|CONNECTOR/.test(p.name)) continue;
-    if (!inDetail(Math.min(p.z0, p.z1))) continue;
-    const key = `${p.name}|${Math.round(p.w)}|${p.dir}|${p.lanes}|${p.rw}`;
-    if (!byKey.has(key)) byKey.set(key, []);
-    byKey.get(key).push([[p.x0, p.z0], [p.x1, p.z1]]);
-  }
-  const out = [];
-  for (const [key, segs] of byKey) {
-    const [name, w, dir, lanes, rw] = key.split('|');
-    // chain pieces end to start
-    const ends = new Map();
-    const k = (p) => `${q(p[0])},${q(p[1])}`;
-    for (const s of segs) ends.set(k(s[0]), s);
-    const used = new Set();
-    for (const s of segs) {
-      if (used.has(s)) continue;
-      // walk back to the first piece of this chain
-      let first = s;
-      const seen = new Set([s]);
-      for (;;) {
-        const prev = segs.find((t) => !seen.has(t) && !used.has(t) && k(t[1]) === k(first[0]));
-        if (!prev) break;
-        seen.add(prev);
-        first = prev;
-      }
-      const line = [first[0]];
-      let cur = first;
-      while (cur && !used.has(cur)) {
-        used.add(cur);
-        line.push(cur[1]);
-        cur = ends.get(k(cur[1]));
-      }
-      out.push({ name, w: +w, dir, lanes: +lanes, hw: rw === '2', pts: rdp(line, 0.8) });
+function deltaRows(vals, w, h) {
+  const out = new Uint16Array(w * h);
+  for (let j = 0; j < h; j++) {
+    let prev = 0;
+    for (let i = 0; i < w; i++) {
+      const v = vals[j * w + i];
+      out[j * w + i] = (v - prev) & 0xffff;
+      prev = v;
     }
   }
   return out;
 }
-const roadLines = mergeRoads();
-log(`${roadLines.length} road polylines (${roadLines.reduce((t, r) => t + r.pts.length, 0)} pts)`);
 
-// --- Central Park: features from OpenStreetMap ------------------------------------------------------------------------
-const osmCP = load('osm_centralpark.json');
-const cpPark = parkShapes.find((p) => p.name === 'Central Park');
-const cpBB = bbox(cpPark.rings.reduce((a, r) => (Math.abs(ringArea(r)) > Math.abs(ringArea(a)) ? r : a)));
-const insideCP = ([x, z]) => x > cpBB.x0 - 5 && x < cpBB.x1 + 5 && z > cpBB.z0 - 5 && z < cpBB.z1 + 5;
-const cp = { bounds: { minX: q(cpBB.x0), maxX: q(cpBB.x1), minZ: q(cpBB.z0), maxZ: q(cpBB.z1) }, outline: null, water: [], lawns: [], drives: [], paths: [], sites: [] };
-cp.outline = flat(rdpRing(cpPark.rings.reduce((a, r) => (Math.abs(ringArea(r)) > Math.abs(ringArea(a)) ? r : a)), 0.8));
-const WATER_NAMES = new Set(['Jacqueline Kennedy Onassis Reservoir', 'The Lake', 'The Pond', 'Harlem Meer', 'Turtle Pond', 'Conservatory Water', 'The Pool']);
-const LAWN_NAMES = new Set(['Sheep Meadow', 'The Great Lawn', 'North Meadow', 'Great Hill', 'Heckscher Ballfields', 'East Meadow', 'Cedar Hill', 'Pilgrim Hill', 'The Dene', 'Conservatory Garden', 'Strawberry Fields']);
-const SITE_NAMES = ['Bethesda Fountain', 'Bow Bridge', 'Belvedere Castle', 'Gapstow Bridge', "Cleopatra's Needle", 'Central Park Carousel', 'The Dairy (Visitor Center and Gift Shop)', 'Delacorte Theater', 'Kerbs Boathouse', 'The Arsenal', 'Central Park Zoo', 'Columbus Circle', 'Pulitzer Fountain', 'Charles A. Dana Discovery Center', 'Loeb Boathouse', 'Wollman Rink', 'Bethesda Terrace'];
-function elemRing(e) {
-  if (e.type === 'way') return (e.geometry || []).map((g) => toWorld(g.lon, g.lat));
-  let best = [];
-  for (const m of e.members || []) if (m.role === 'outer' && m.geometry && m.geometry.length > best.length) best = m.geometry.map((g) => toWorld(g.lon, g.lat));
-  return best;
-}
-function elemRings(e) {
-  // relations (The Lake, Turtle Pond, Harlem Meer) come as several outer ways: chain them into closed rings
-  if (e.type === 'way') return [(e.geometry || []).map((g) => toWorld(g.lon, g.lat))];
-  const parts = (e.members || []).filter((m) => m.role === 'outer' && m.geometry).map((m) => m.geometry.map((g) => toWorld(g.lon, g.lat)));
-  const rings = [];
-  const close = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.5;
-  while (parts.length) {
-    let ring = parts.shift();
-    for (let guard = 0; guard < 500 && !close(ring[0], ring[ring.length - 1]); guard++) {
-      const i = parts.findIndex((p) => close(p[0], ring[ring.length - 1]) || close(p[p.length - 1], ring[ring.length - 1]));
-      if (i < 0) break;
-      const p = parts.splice(i, 1)[0];
-      ring = ring.concat(close(p[0], ring[ring.length - 1]) ? p.slice(1) : p.reverse().slice(1));
-    }
-    rings.push(ring);
+// --- 1. Terrain & plan ----------------------------------------------------------------------------------------------
+const T = await loadTerrain();
+lap('terrain loaded');
+const plan = buildPlan(T);
+lap('plan built');
+const nodeH = gradeRoads(T, segments);
+lap('roads graded');
+
+// --- 2. Ground classes: plan majority + parks + beaches ---------------------------------------------------------------
+const ground = classGrid(plan);
+const C_PARK = 4, C_SAND = 5;
+const parks = [];
+{
+  const R = new Raster(TERRAIN.x0, TERRAIN.z0, TERRAIN.x0 + TERRAIN.w * TERRAIN.res, TERRAIN.z0 + TERRAIN.h * TERRAIN.res, TERRAIN.res);
+  const addPark = (name, ring) => {
+    R.fillRing(ring, 1);
+    const simple = rdpRing(ring, 2);
+    if (simple.length >= 3 && Math.abs(ringArea(simple)) > 400) parks.push([name, flatDm(simple)]);
+  };
+  for (const f of loadFeatures('parks')) {
+    const g = f.geometry;
+    if (!g) continue;
+    for (const poly of g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]) addPark(f.properties.map_park_n || 'Park', poly[0].map(([lon, lat]) => toWorld(lon, lat)));
   }
-  return rings;
+  // National parkland (Presidio, Lands End, Fort Funston...) is missing from RPD: take those neighbourhoods whole
+  for (const f of loadFeatures('neighborhoods')) {
+    if (!/^(Presidio|Lincoln Park|Golden Gate Park|McLaren Park)$/.test(f.properties.nhood)) continue;
+    const g = f.geometry;
+    for (const poly of g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]) R.fillRing(poly[0].map(([lon, lat]) => toWorld(lon, lat)), 1);
+  }
+  for (let k = 0; k < ground.length; k++) if (R.d[k] && (ground[k] === C_OPEN || ground[k] === C_PARCEL)) ground[k] = C_PARK;
+  // Beaches: low open ground near the sea
+  const W = TERRAIN.w;
+  R.d.fill(0);
+  for (let k = 0; k < ground.length; k++) R.d[k] = T.water[k] === 1 ? 1 : 0;
+  const toSea = R.edt((v) => v === 1);
+  for (let k = 0; k < ground.length; k++) {
+    if ((ground[k] === C_OPEN || ground[k] === C_PARK) && T.hgt[k] < 5.5 && toSea[k] * TERRAIN.res * TERRAIN.res < 120 * 120) ground[k] = C_SAND;
+  }
+  void W;
 }
-const seenSites = new Set();
-for (const e of osmCP.elements) {
-  const t = e.tags || {};
-  const n = t.name || '';
-  const isWater = t.natural === 'water' && (WATER_NAMES.has(n) || (!n && t.water === 'pond'));
-  if (isWater) {
-    for (const r of elemRings(e)) {
-      if (r.length < 4 || !insideCP(centroid(r)) || Math.abs(ringArea(r)) < 200) continue;
-      const s = rdpRing(r.slice(0, -1), 0.6);
-      if (ringArea(s) > 0) s.reverse();
-      cp.water.push({ name: n, ring: flat(s) });
+lap(`ground classes (${parks.length} park outlines)`);
+
+// --- 3. Curbs (from the plan) & drop the 1 m rasters ------------------------------------------------------------------
+const curbs = plan.curbs.map((c) => [c.closed ? 1 : 0, flatDm(c.pts), c.sw.map((v) => Math.round(v * 10))]);
+plan.R.d = null; plan.C = null; plan.P = null; plan.lab = null;
+
+// --- 4. Buildings -------------------------------------------------------------------------------------------------------
+const TILE = 500;
+const buildings = loadBuildings();
+const styleCount = new Array(7).fill(0);
+for (const b of buildings) {
+  let base = Infinity;
+  for (const [x, z] of b.ring) base = Math.min(base, sampleGrid(T, x, z));
+  base = Math.min(base, sampleGrid(T, b.cx, b.cz)) - 0.4;
+  if (!Number.isFinite(base)) base = b.gnd;
+  let top = b.roof;
+  if (top - base < 2.8) top = base + 2.8;
+  b.base = base;
+  b.top = top;
+  b.style = classify(b, top - Math.max(base, b.gnd));
+  styleCount[b.style]++;
+  b.tile = `${Math.floor(b.cx / TILE)},${Math.floor(b.cz / TILE)}`;
+}
+buildings.sort((p, q) => (p.tile < q.tile ? -1 : p.tile > q.tile ? 1 : 0));
+log(`styles: ${Object.keys(STYLE).map((k, i) => `${k} ${styleCount[i]}`).join(', ')}`);
+// Record: Int32 cx dm, Int32 cz dm, Uint16 base (h+20)*10, Uint16 top (h+20)*10, Uint8 style, Uint8 n, Uint16 seed,
+//         n x (Int16 dx dm, Int16 dz dm) relative to (cx, cz)
+const tiles = {};
+{
+  let size = 0;
+  for (const b of buildings) {
+    while (b.ring.length > 255) b.ring = b.ring.filter((_, i) => i % 2 === 0);
+    size += 16 + b.ring.length * 4;
+  }
+  const buf = new ArrayBuffer(size);
+  const dv = new DataView(buf);
+  let o = 0;
+  for (const b of buildings) {
+    if (!tiles[b.tile]) tiles[b.tile] = [o, 0];
+    tiles[b.tile][1]++;
+    const cx = dm(b.cx), cz = dm(b.cz);
+    dv.setInt32(o, cx, true); dv.setInt32(o + 4, cz, true);
+    dv.setUint16(o + 8, Math.max(0, Math.min(65535, Math.round((b.base + 20) * 10))), true);
+    dv.setUint16(o + 10, Math.max(0, Math.min(65535, Math.round((b.top + 20) * 10))), true);
+    dv.setUint8(o + 12, b.style);
+    dv.setUint8(o + 13, b.ring.length);
+    dv.setUint16(o + 14, b.id & 0xffff, true);
+    o += 16;
+    for (const [x, z] of b.ring) {
+      dv.setInt16(o, Math.max(-32768, Math.min(32767, dm(x) - cx)), true);
+      dv.setInt16(o + 2, Math.max(-32768, Math.min(32767, dm(z) - cz)), true);
+      o += 4;
     }
-  } else if (LAWN_NAMES.has(n) && (t.landuse === 'grass' || t.leisure)) {
-    const r = elemRing(e);
-    if (r.length > 3 && insideCP(centroid(r))) {
-      const s = rdpRing(r.slice(0, -1), 0.8);
-      if (ringArea(s) > 0) s.reverse();
-      cp.lawns.push({ name: n, ring: flat(s) });
-    }
-  } else if (e.type === 'way' && t.highway && /^(East Drive|West Drive|Center Drive|Terrace Drive)$/.test(n)) {
-    const r = elemRing(e);
-    if (r.length > 1 && insideCP(r[0])) cp.drives.push({ name: n, w: t.highway === 'service' ? 6 : 9, pts: flat(rdp(r, 0.8)) });
-  } else if (e.type === 'way' && t.highway && /Transverse/.test(n) && t.highway !== 'footway') {
-    const r = elemRing(e);
-    if (r.length > 1) cp.drives.push({ name: n, w: 10, transverse: true, pts: flat(rdp(r, 0.8)) });
-  } else if (SITE_NAMES.includes(n) && !seenSites.has(n)) {
-    const r = elemRing(e);
-    if (!r.length) continue;
-    const b = bbox(r);
-    seenSites.add(n);
-    // long axis of the outline (bridges: the span) by principal component
-    const [mx, mz] = centroid(r);
-    let sxx = 0, szz = 0, sxz = 0;
-    for (const [x, z] of r) { sxx += (x - mx) ** 2; szz += (z - mz) ** 2; sxz += (x - mx) * (z - mz); }
-    const ang = 0.5 * Math.atan2(2 * sxz, sxx - szz);
-    cp.sites.push({ name: n, x: q((b.x0 + b.x1) / 2), z: q((b.z0 + b.z1) / 2), w: q(b.x1 - b.x0), d: q(b.z1 - b.z0), ang: Math.round(ang * 1000) / 1000 });
+  }
+  writeGz('buildings.bin.gz', new Uint8Array(buf));
+}
+lap('buildings');
+
+// --- 5. Street trees ----------------------------------------------------------------------------------------------------
+// kinds map onto the tree models in js/trees.js: 0 plane (broad), 1 locust (small, open), 2 elm (vase / tall)
+function treeKind(species) {
+  const s = species.toLowerCase();
+  if (/platanus|ficus|magnolia|quercus|ulmus americana|tilia|liquidambar|acer|lophostemon|eucalyptus/.test(s)) return 0;
+  if (/prunus|pyrus|callistemon|arbutus|pittosporum|tristaniopsis|olea|ligustrum|eriobotrya|cordyline|maytenus|ginkgo|corymbia|metrosideros/.test(s)) return 1;
+  return 2;
+}
+let trees;
+{
+  const list = [];
+  for (const f of loadFeatures('trees')) {
+    const p = f.properties;
+    if (p.planttype && p.planttype !== 'Tree') continue;
+    const lon = +p.longitude, lat = +p.latitude;
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const [x, z] = toWorld(lon, lat);
+    if (x < TERRAIN.x0 || z < TERRAIN.z0 || x > TERRAIN.x0 + TERRAIN.w * TERRAIN.res || z > TERRAIN.z0 + TERRAIN.h * TERRAIN.res) continue;
+    list.push([x, z, treeKind(p.species || ''), Math.max(0, Math.min(9, +p.dbhrange || 2))]);
+  }
+  const buf = new ArrayBuffer(list.length * 6);
+  const dv = new DataView(buf);
+  list.forEach(([x, z, k, d], i) => {
+    dv.setInt16(i * 6, Math.round(x * 2), true);
+    dv.setInt16(i * 6 + 2, Math.round(z * 2), true);
+    dv.setUint8(i * 6 + 4, k);
+    dv.setUint8(i * 6 + 5, d);
+  });
+  writeGz('trees.bin.gz', new Uint8Array(buf));
+  trees = list.length;
+}
+lap(`${trees} street trees`);
+
+// --- 6. Heightfields ----------------------------------------------------------------------------------------------------
+{
+  const q = new Uint16Array(T.w * T.h);
+  for (let k = 0; k < q.length; k++) q[k] = Math.max(0, Math.min(65535, Math.round((T.hgt[k] + 20) * 25)));
+  writeGz('terrain.bin.gz', deltaRows(q, T.w, T.h));
+  writeGz('ground.bin.gz', ground);
+  const B = await loadBay();
+  const qb = new Uint16Array(B.w * B.h);
+  for (let k = 0; k < qb.length; k++) qb[k] = Math.max(0, Math.min(65535, Math.round((B.hgt[k] + 20) * 2)));
+  writeGz('bay.bin.gz', deltaRows(qb, B.w, B.h));
+}
+lap('heightfields');
+
+// --- 7. Vector layers -----------------------------------------------------------------------------------------------
+const roads = segments.filter((s) => s.kind === 'road').map((s) => [s.name, s.cls, s.oneway, dm(s.rw), dm(s.sw), s.a, s.b, flatDm(s.pts), s.layer.startsWith('PARKS') ? 1 : 0]);
+const freeways = segments.filter((s) => s.kind === 'freeway').map((s) => [s.name, s.oneway, flatDm(s.pts)]);
+const nodes = {};
+for (const s of segments) {
+  if (s.kind !== 'road') continue;
+  for (const [id, p] of [[s.a, s.pts[0]], [s.b, s.pts[s.pts.length - 1]]]) if (!nodes[id]) nodes[id] = [dm(p[0]), dm(p[1]), dm(nodeH.get(id) ?? sampleGrid(T, p[0], p[1]))];
+}
+const nhoods = [];
+for (const f of loadFeatures('neighborhoods')) {
+  const g = f.geometry;
+  for (const poly of g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates]) {
+    const ring = rdpRing(poly[0].map(([lon, lat]) => toWorld(lon, lat)), 4);
+    if (ring.length >= 3) nhoods.push([f.properties.nhood, flatDm(ring)]);
   }
 }
-// Transverses from the centreline (OSM marks parts of them as footways)
-for (const p of roadLines) if (/TRANSVERSE/.test(p.name)) cp.drives.push({ name: p.name, w: p.w || 10, transverse: true, pts: flat(p.pts) });
-log(`Central Park: ${cp.water.length} water bodies, ${cp.lawns.length} lawns, ${cp.drives.length} drive pieces, ${cp.sites.length} sites`);
-
-// --- Landmarks: real footprints (grid-aligned bounding boxes) from OSM ---------------------------------------------
-const osmLM = load('osm_landmarks.json');
-const landmarks = {};
-for (const e of osmLM.elements) {
-  const t = e.tags || {};
-  const r = elemRing(e);
-  if (!r.length || !t.name) continue;
-  const b = bbox(r);
-  const area = Math.abs(ringArea(r));
-  const prev = landmarks[t.name];
-  if (prev && prev.area >= area) continue;
-  landmarks[t.name] = { x: q((b.x0 + b.x1) / 2), z: q((b.z0 + b.z1) / 2), w: q(b.x1 - b.x0), d: q(b.z1 - b.z0), h: t.height ? parseFloat(t.height) : null, area: Math.round(area), ring: flat(rdpRing(r.slice(0, -1), 0.4)) };
-}
-log(`${Object.keys(landmarks).length} landmark footprints`);
-
-// --- Assemble -----------------------------------------------------------------------------------------------------------
-const streetsOut = STREETS.filter((s) => inDetail(s.z)).map((s) => ({ n: s.n, z: s.z, segs: s.segs.map(([a, b, d, w]) => [q(a), q(b), d, q(w)]) }));
-const avenuesOut = AVENUES.map((a) => ({
-  id: a.id, label: a.label, x: a.x,
-  segs: a.segs.filter((s) => s.z1 > CUT_Z - 200).map((s) => ({ z0: Math.max(s.z0, CUT_Z - 200), z1: s.z1, dir: s.dir, w: s.w, lanes: s.lanes, names: s.names }))
-})).filter((a) => a.segs.length);
-
-// --- Points of note from their real coordinates (bridge towers beyond the island, the statue, ferry terminals) --------
-const POINTS = {
-  gwbManhattanTower: [40.85012, -73.94693], gwbNJTower: [40.85361, -73.95804],
-  verrazzanoBrooklynTower: [40.60799, -74.03864], verrazzanoStatenTower: [40.60458, -74.05385],
-  statueOfLiberty: [40.68925, -74.0445], whitehallTerminal: [40.70123, -74.0131], pier17: [40.70578, -74.00185],
-  castleClinton: [40.70355, -74.01686], peterMinuitPlaza: [40.70187, -74.01334], bowlingGreen: [40.70496, -74.01352]
-};
-const points = Object.fromEntries(Object.entries(POINTS).map(([k, [lat, lon]]) => [k, toWorld(lon, lat).map(q)]));
-
-const GEO = {
+const geo = {
   version: 1,
-  frame: { bearingDeg: q((geo.THETA * 180) / Math.PI * 10) / 10, origin: '5th Ave & 42nd St (centreline)', units: 'm', cutZ: CUT_Z, strip: STRIP, sidewalk: SIDEWALK },
-  manhattan: flat(manhattanSouth),
-  upperManhattan: flat(manhattanNorth),
-  innerShore: flat(innerRing),
-  islands: Object.fromEntries(Object.entries(islands).map(([k, r]) => [k, flat(r)])),
-  boroughs: {
-    brooklyn: geo.boroughs.brooklyn.map(flat),
-    queens: geo.boroughs.queens.map(flat),
-    bronx: geo.boroughs.bronx.map(flat),
-    statenIsland: geo.boroughs.statenIsland.map(flat),
-    newJersey: [flat(nj)]
-  },
-  streets: streetsOut,
-  avenues: avenuesOut,
-  broadway: flat(broadway),
-  plazas: PLAZAS.map((p) => ({ name: p.name, a: p.a.map(q), b: p.b.map(q), w: p.w })),
-  roads: roadLines.map((r) => [r.name, r.w ? q(r.w) : 0, r.dir || '', r.lanes || 0, r.hw ? 1 : 0, flat(r.pts)]),
-  // Street centreline graph for Lower Manhattan and northern non-grid roads (geo-roadgraph.mjs): nodes [x, z, ...],
-  // links [node a, node b, name index, curb-to-curb width, travel lanes, direction (1: a -> b, -1: b -> a, 0: both),
-  // inner shape points [x, z, ...]]
-  roadGraph: buildRoadGraph(),
-  // [outline, lot rects, park share, park name, rectangular, frontage frames [[θ, px, pz, lot rects in the frame], ...] | 0]
-  blocks: blocks.map((b) => [flat(b.poly), b.rects.map((r) => r.map(q)), b.park || 0, b.parkName || '', b.rect ? 1 : 0,
-    b.frames ? b.frames.map(([th, px, pz, rs]) => [Math.round(th * 1e4) / 1e4, q(px), q(pz), rs.map((r) => r.map(q))]) : 0]),
-  parks: parkShapes.map((p) => ({ name: p.name, cat: p.cat, acres: p.acres, rings: p.rings.map(flat) })),
-  centralPark: cp,
-  piers: piers.map((p) => ({ name: p.name, cx: q(p.cx), cz: q(p.cz), len: q(p.len), wid: q(p.wid), ang: Math.round(p.ang * 1e4) / 1e4, ring: flat(p.ring) })),
-  bridges: Object.fromEntries(Object.entries(bridges).map(([k, b]) => [k, { a: b.a.map(q), mid: b.mid.map(q), dir: [Math.round(b.ux * 1e5) / 1e5, Math.round(b.uz * 1e5) / 1e5] }])),
-  landmarks,
-  points
+  generated: new Date().toISOString().slice(0, 10),
+  frame: FRAME,
+  seaLevel: SEA_LEVEL,
+  terrain: { file: 'terrain.bin.gz', res: TERRAIN.res, x0: TERRAIN.x0, z0: TERRAIN.z0, w: TERRAIN.w, h: TERRAIN.h, scale: 25, offset: 20 },
+  ground: { file: 'ground.bin.gz', classes: ['water', 'road', 'open', 'lot', 'park', 'sand'] },
+  bay: { file: 'bay.bin.gz', res: 32, x0: -30000, z0: -24000, w: 1876, h: 1563, scale: 2, offset: 20 },
+  buildings: { file: 'buildings.bin.gz', count: buildings.length, tile: TILE, tiles, styles: Object.keys(STYLE) },
+  trees: { file: 'trees.bin.gz', count: trees, kinds: ['plane', 'locust', 'elm'] },
+  lakes: T.lakes.filter((l) => l.n >= 120).map((l) => [l.level, l.x0, l.z0, l.x1, l.z1]),
+  roads, // [name, class, oneway (1 with / -1 against digitised direction), roadway dm, sidewalk dm, nodeA, nodeB, [x,z dm...], park drive]
+  nodes, // id: [x dm, z dm, graded height dm]
+  freeways,
+  curbs, // [closed, [x,z dm...], [sidewalk width dm per vertex]] — island on the right of travel
+  parks, // [name, ring dm]
+  nhoods // [name, ring dm]
 };
-
-const json = JSON.stringify(GEO);
-const header = `// js/nyc-geodata.js — GENERATED by tools/build-geodata.mjs, do not edit by hand.
-// Real New York geography in the simulation's world frame: 1 unit = 1 m, x = Manhattan-grid east, z = grid south,
-// origin at the centreline intersection of 5th Ave & 42nd St, axes turned ${GEO.frame.bearingDeg}° from true north.
-// Polygons & polylines are flat [x0, z0, x1, z1, ...] arrays.
-// Sources: NYC DCP Borough Boundaries, NYC Street Centerline (CSCL) & NYC Parks Properties (NYC Open Data);
-// Central Park features, piers, landmark footprints & the New Jersey shore © OpenStreetMap contributors (ODbL).
-`;
-fs.writeFileSync(OUT, `${header}export const GEO = ${json};\n`);
-log(`wrote ${OUT} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB)`);
-for (const [k, v] of Object.entries(GEO)) log(`  ${k}: ${(JSON.stringify(v).length / 1024).toFixed(0)} KB`);
+fs.writeFileSync(path.join(OUT, 'sf-geo.json'), JSON.stringify(geo));
+const sz = fs.statSync(path.join(OUT, 'sf-geo.json')).size;
+log(`wrote sf-geo.json: ${(sz / 1e6).toFixed(2)} MB (gzip ${(zlib.gzipSync(fs.readFileSync(path.join(OUT, 'sf-geo.json'))).length / 1e6).toFixed(2)} MB)`);
+lap('done');
+void C_ROAD; void C_WATER;

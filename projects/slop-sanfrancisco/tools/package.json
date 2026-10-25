@@ -1,0 +1,9 @@
+{
+  "name": "slop-sanfrancisco-tools",
+  "private": true,
+  "type": "module",
+  "description": "Offline data pipeline for Slop San Francisco (not needed to run the site)",
+  "dependencies": {
+    "geotiff": "2.1.3"
+  }
+}
